@@ -10,6 +10,7 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import branchService, { Branch } from './branchService';
+import authService from './authService';
 
 /**
  * Site domain object - mirrors the sites table exactly
@@ -29,8 +30,11 @@ export interface Site {
   shiftIn?: string;    // shift_in
   shiftOut?: string;   // shift_out
   shift?: string;
-  provinceId?: number; // province_id
-  clientId?: number;   // client_id
+  provinceId?: number;  // province_id
+  provinceName?: string; // province name
+  lguName?: string;      // LGU / city / municipality name
+  clientId?: number;    // client_id
+  areaId?: number;      // area_id
 }
 
 /**
@@ -63,15 +67,19 @@ class SiteServiceImpl {
       radius = 75;
     }
 
+    const id = Number(row.id ?? 0);
+    // Use site_name → name → site_code → id as fallback so name is never empty
+    const name = String(row.site_name ?? row.name ?? row.site_code ?? id ?? '');
+
     return {
-      id: Number(row.id ?? 0),
+      id,
       companyId: Number(row.company_id ?? 0) || undefined,
       lguId: Number(row.lgu_id ?? 0) || undefined,
       code: row.site_code ?? undefined,
       siteType: row.site_type ?? undefined,
       withOt: row.with_ot != null ? Boolean(row.with_ot) : undefined,
       siteStatus: row.site_status ?? undefined,
-      name: String(row.site_name ?? row.name ?? ''),
+      name,
       latitude,
       longitude,
       radius,
@@ -79,7 +87,10 @@ class SiteServiceImpl {
       shiftOut: row.shift_out ?? undefined,
       shift: row.shift ?? undefined,
       provinceId: Number(row.province_id ?? 0) || undefined,
+      provinceName: row.province_name ?? row.province?.name ?? undefined,
+      lguName: row.lgu_name ?? row.lgu?.name ?? row.lgu?.city_name ?? row.city_name ?? undefined,
       clientId: Number(row.client_id ?? 0) || undefined,
+      areaId: Number(row.area_id ?? 0) || undefined,
     };
   }
 
@@ -88,49 +99,51 @@ class SiteServiceImpl {
    * Currently uses branch fallback; will switch to site API when available
    */
   async getNearby(latitude: number, longitude: number, companyId: number): Promise<Site[]> {
+    const url = `https://api.rds.ismis.com.ph/api/sites/by-company?company_id=${companyId}&latitude=${latitude}&longitude=${longitude}`;
     try {
-      const endpoints = [
-        `https://api.rds.ismis.com.ph/api/sites/by-company?company_id=${companyId}&latitude=${latitude}&longitude=${longitude}`,
-        `https://api.rds.ismis.com.ph/api/sites/by-company?company_id=${companyId}&latitude=&longitude=`,
-        `https://api.rds.ismis.com.ph/api/branches/by-company?company_id=${companyId}&latitude=${latitude}&longitude=${longitude}`,
-      ];
+      console.log(`[SiteService] getNearby → ${url}`);
+      const userData = await authService.getUserData();
+      const token = userData?.access_token ?? null;
+      const headers: Record<string, string> = { 'Accept': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      const response = await fetch(url, { method: 'GET', headers });
+      console.log(`[SiteService] getNearby status=${response.status} hasToken=${!!token}`);
 
-      for (const url of endpoints) {
-        try {
-          const response = await fetch(url);
-          if (!response.ok) continue;
-
-          const data = await response.json();
-          const rows = Array.isArray(data)
-            ? data
-            : data.data || data.sites || data.branches || [];
-
-          if (!Array.isArray(rows) || rows.length === 0) {
-            continue;
-          }
-
-          const normalized = rows
-            .map((row: any) => this.adaptToSite(row))
-            .filter(
-              (site) =>
-                Number.isFinite(site.id) &&
-                site.id > 0 &&
-                site.name.length > 0 &&
-                Number.isFinite(site.latitude) &&
-                Number.isFinite(site.longitude)
-            );
-
-          if (normalized.length > 0) {
-            return normalized;
-          }
-        } catch (err) {
-          console.warn('[SiteService] getNearby endpoint failed:', url, err);
-        }
+      if (!response.ok) {
+        console.warn(`[SiteService] getNearby HTTP ${response.status}`);
+        return [];
       }
 
-      return [];
+      const data = await response.json();
+      console.log(`[SiteService] getNearby raw keys=${Object.keys(data ?? {}).join(',') || '(array)'}`);
+
+      // Support: { data: [...] }, { sites: [...] }, or plain array
+      const rows: any[] = Array.isArray(data)
+        ? data
+        : Array.isArray(data.data)
+        ? data.data
+        : Array.isArray(data.sites)
+        ? data.sites
+        : [];
+
+      console.log(`[SiteService] getNearby raw rows=${rows.length}`);
+      if (rows.length > 0) {
+        console.log(`[SiteService] getNearby first row keys=${Object.keys(rows[0]).join(',')}`);
+        console.log(`[SiteService] getNearby first row=${JSON.stringify(rows[0])}`);
+      }
+
+      const normalized = rows
+        .map((row: any) => this.adaptToSite(row))
+        .filter((site) => Number.isFinite(site.id) && site.id > 0);
+
+      console.log(`[SiteService] getNearby normalized=${normalized.length} sites`);
+      normalized.forEach((s) =>
+        console.log(`[SiteService]  id=${s.id} name="${s.name}" lat=${s.latitude} lon=${s.longitude} radius=${s.radius}`)
+      );
+
+      return normalized;
     } catch (error) {
-      console.error('Error fetching nearby sites:', error);
+      console.error('[SiteService] getNearby error:', error);
       return [];
     }
   }
@@ -255,6 +268,8 @@ class SiteServiceImpl {
       if (site.shiftOut) await AsyncStorage.setItem('current_site_shift_out', site.shiftOut);
       if (site.shift) await AsyncStorage.setItem('current_site_shift', site.shift);
       if (site.code) await AsyncStorage.setItem('current_site_code', site.code);
+      if (site.provinceName) await AsyncStorage.setItem('current_site_province_name', site.provinceName);
+      if (site.lguName) await AsyncStorage.setItem('current_site_lgu_name', site.lguName);
       console.log('[SiteService] Current site set:', site.id, site.name);
     } catch (error) {
       console.error('Error saving current site:', error);

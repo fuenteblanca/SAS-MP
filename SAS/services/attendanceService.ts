@@ -548,6 +548,7 @@ export default {
 		provinceId?: number;
 		clientId?: number;
 		lguId?: number;
+		areaId?: number;
 	}) => {
 		try {
 			const user = await authService.getUserData();
@@ -569,6 +570,7 @@ export default {
 				province_id: args.provinceId,
 				client_id: args.clientId,
 				lgu_id: args.lguId,
+				area_id: args.areaId,
 				company_id: args.companyId,
 			};
 

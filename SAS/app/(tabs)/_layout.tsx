@@ -349,23 +349,13 @@ export default function TabLayout() {
 
       // Get current location
       const location = await getCurrentLocationSafe();
-
-      // Geofence validation: verify still within authorized area
-      const distance = siteService.calculateDistance(
-        location.coords.latitude,
-        location.coords.longitude,
-        submitSite.latitude,
-        submitSite.longitude
-      );
+      const userLat = location.coords.latitude;
+      const userLon = location.coords.longitude;
       const gpsAccuracy = location.coords.accuracy ?? 0;
-      const accuracyBuffer = Math.min(Math.max(gpsAccuracy, 0), 120);
-      const effectiveRadius = (submitSite.radius > 0 ? submitSite.radius : 75) + accuracyBuffer;
 
-      if (distance > effectiveRadius) {
-        throw new Error(
-          `You are not within the allowed site area.\nDistance: ${distance.toFixed(2)}m\nAllowed radius: ${effectiveRadius.toFixed(2)}m`
-        );
-      }
+      // Log distance for diagnostics (geofence was already validated in autoResolveSiteFromGeofence)
+      const distance = siteService.calculateDistance(userLat, userLon, submitSite.latitude, submitSite.longitude);
+      console.log(`[TimeIn] site=${submitSite.id} distance=${distance.toFixed(1)}m radius=${submitSite.radius}m accuracy=${gpsAccuracy.toFixed(1)}m`);
 
       // Get internet time
       let dateTime: Date;
@@ -397,11 +387,12 @@ export default function TabLayout() {
         shift: submitSite.shift,
         siteLat: submitSite.latitude,
         siteLong: submitSite.longitude,
-        latitude: submitSite.latitude,
-        longitude: submitSite.longitude,
+        latitude: userLat,
+        longitude: userLon,
         provinceId: submitSite.provinceId,
         clientId: submitSite.clientId,
         lguId: submitSite.lguId,
+        areaId: submitSite.areaId ?? (userData.user_area_id ? Number(userData.user_area_id) : undefined),
       });
 
       if (!result.success) {
@@ -498,23 +489,13 @@ export default function TabLayout() {
 
       // Get current location
       const location = await getCurrentLocationSafe();
-
-      // Geofence validation: verify still within authorized area
-      const distance = siteService.calculateDistance(
-        location.coords.latitude,
-        location.coords.longitude,
-        submitSite.latitude,
-        submitSite.longitude
-      );
+      const userLat = location.coords.latitude;
+      const userLon = location.coords.longitude;
       const gpsAccuracy = location.coords.accuracy ?? 0;
-      const accuracyBuffer = Math.min(Math.max(gpsAccuracy, 0), 120);
-      const effectiveRadius = (submitSite.radius > 0 ? submitSite.radius : 75) + accuracyBuffer;
 
-      if (distance > effectiveRadius) {
-        throw new Error(
-          `You are not within the allowed site area.\nDistance: ${distance.toFixed(2)}m\nAllowed radius: ${effectiveRadius.toFixed(2)}m`
-        );
-      }
+      // Log distance for diagnostics (geofence was already validated in autoResolveSiteFromGeofence)
+      const distance = siteService.calculateDistance(userLat, userLon, submitSite.latitude, submitSite.longitude);
+      console.log(`[TimeOut] site=${submitSite.id} distance=${distance.toFixed(1)}m radius=${submitSite.radius}m accuracy=${gpsAccuracy.toFixed(1)}m`);
 
       // Get internet time
       let dateTime: Date;
@@ -546,11 +527,12 @@ export default function TabLayout() {
         shift: submitSite.shift,
         siteLat: submitSite.latitude,
         siteLong: submitSite.longitude,
-        latitude: submitSite.latitude,
-        longitude: submitSite.longitude,
+        latitude: userLat,
+        longitude: userLon,
         provinceId: submitSite.provinceId,
         clientId: submitSite.clientId,
         lguId: submitSite.lguId,
+        areaId: submitSite.areaId ?? (userData.user_area_id ? Number(userData.user_area_id) : undefined),
       });
 
       if (!result.success) {

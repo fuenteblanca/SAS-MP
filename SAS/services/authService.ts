@@ -64,6 +64,11 @@ class AuthService {
           console.log('No company_id found in user data');
         }
 
+        if (data.user.area_id != null) {
+          await AsyncStorage.setItem('user_area_id', String(data.user.area_id));
+          console.log('Parsed Area ID:', data.user.area_id);
+        }
+
         console.log('Parsed Name:', data.user.name);
         console.log('Employee ID stored:', data.user.employee_id);
         console.log('User ID stored:', data.user.id);
@@ -137,15 +142,17 @@ class AuthService {
     userName: string | null;
     user_company_id: string | null;
     user_branch_id: string | null;
+    user_area_id: string | null;
     access_token: string | null;
   }> {
     try {
-      const [employee_id, user_id, userName, user_company_id, user_branch_id, access_token] = await AsyncStorage.multiGet([
+      const [employee_id, user_id, userName, user_company_id, user_branch_id, user_area_id, access_token] = await AsyncStorage.multiGet([
         'employee_id',
         'user_id',
         'userName',
         'user_company_id',
         'user_branch_id',
+        'user_area_id',
         'access_token',
       ]);
 
@@ -155,6 +162,7 @@ class AuthService {
         userName: userName[1],
         user_company_id: user_company_id[1],
         user_branch_id: user_branch_id[1],
+        user_area_id: user_area_id[1],
         access_token: access_token[1],
       };
     } catch (e) {
@@ -165,6 +173,7 @@ class AuthService {
         userName: null,
         user_company_id: null,
         user_branch_id: null,
+        user_area_id: null,
         access_token: null,
       };
     }
@@ -184,7 +193,7 @@ class AuthService {
     message?: string;
   }> {
     // Use the correct attendance-logs endpoint with specific fields
-    let urlString = `${BASE_URL}/api/attendance-logs/employee?employee_id=${employeeId}&fields=date,time,action,branch_name,branch_id,branch,guard_type`;
+    let urlString = `${BASE_URL}/api/attendance-logs/employee?employee_id=${employeeId}&fields=date,time,action,branch_name,branch_id,branch,guard_type,province_name,lgu_name,site_name,shift_in,shift_out`;
 
     if (startDate) urlString += `&start_date=${startDate}`;
     if (endDate) urlString += `&end_date=${endDate}`;

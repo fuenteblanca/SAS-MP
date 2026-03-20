@@ -30,6 +30,13 @@ export default function HomeScreen() {
   const [currentDate, setCurrentDate] = useState('');
   const [clockInTime, setClockInTime] = useState('— : — : —');
   const [clockOutTime, setClockOutTime] = useState('— : — : —');
+  const [siteName, setSiteName] = useState('');
+  const [siteCode, setSiteCode] = useState('');
+  const [shiftIn, setShiftIn] = useState('');
+  const [shiftOut, setShiftOut] = useState('');
+  const [guardType, setGuardType] = useState('');
+  const [provinceName, setProvinceName] = useState('');
+  const [lguName, setLguName] = useState('');
   const [requests, setRequests] = useState<any[]>([]);
   const [approvedTimeInChange, setApprovedTimeInChange] = useState<string | null>(null);
   const [approvedTimeOutChange, setApprovedTimeOutChange] = useState<string | null>(null);
@@ -58,6 +65,7 @@ export default function HomeScreen() {
     const interval = setInterval(updateTime, 1000);
     fetchTodayAttendance();
     loadChangeRequests();
+    loadSiteInfo();
     // Subscribe to requestsUpdated events so Home refreshes immediately when other screens submit
     const unsub = eventBus.on('requestsUpdated', () => {
       loadChangeRequests();
@@ -73,7 +81,8 @@ export default function HomeScreen() {
     React.useCallback(() => {
       fetchTodayAttendance();
       loadChangeRequests();
-      
+      loadSiteInfo();
+
       // Set up polling to refresh attendance every 5 seconds while on this screen
       const pollInterval = setInterval(() => {
         fetchTodayAttendance();
@@ -174,6 +183,30 @@ export default function HomeScreen() {
     }
 
     return Number.NEGATIVE_INFINITY;
+  };
+
+  const loadSiteInfo = async () => {
+    try {
+      const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+      const [name, code, sIn, sOut, gType, provName, lgu] = await Promise.all([
+        AsyncStorage.getItem('current_site_name'),
+        AsyncStorage.getItem('current_site_code'),
+        AsyncStorage.getItem('current_site_shift_in'),
+        AsyncStorage.getItem('current_site_shift_out'),
+        AsyncStorage.getItem('guard_type'),
+        AsyncStorage.getItem('current_site_province_name'),
+        AsyncStorage.getItem('current_site_lgu_name'),
+      ]);
+      if (name) setSiteName(name);
+      if (code) setSiteCode(code);
+      if (sIn) setShiftIn(sIn);
+      if (sOut) setShiftOut(sOut);
+      if (gType) setGuardType(gType);
+      if (provName) setProvinceName(provName);
+      if (lgu) setLguName(lgu);
+    } catch (e) {
+      console.warn('[Home] loadSiteInfo error', e);
+    }
   };
 
   const fetchTodayAttendance = async () => {
@@ -310,6 +343,33 @@ export default function HomeScreen() {
 
         console.log('DEBUG: Total logs received:', attendanceLogs.length, 'Today only:', todayLogs.length);
 
+        // Extract province/LGU/site info from any of today's logs and update display state
+        for (const log of todayLogs) {
+          const pName = log.province_name ?? log.province?.name ?? null;
+          const lName = log.lgu_name ?? log.lgu?.name ?? log.lgu?.city_name ?? log.city_name ?? null;
+          const sName = log.site_name ?? log.site?.name ?? null;
+          const sIn   = log.shift_in ?? null;
+          const sOut  = log.shift_out ?? null;
+          const gType = log.guard_type ?? null;
+          if (pName) { setProvinceName(pName); }
+          if (lName) { setLguName(lName); }
+          if (sName) { setSiteName(sName); }
+          if (sIn)   { setShiftIn(sIn); }
+          if (sOut)  { setShiftOut(sOut); }
+          if (gType) { setGuardType(gType); }
+          // Persist to AsyncStorage so the card shows even before an API response
+          try {
+            const AS = require('@react-native-async-storage/async-storage').default;
+            if (pName) await AS.setItem('current_site_province_name', pName);
+            if (lName) await AS.setItem('current_site_lgu_name', lName);
+            if (sName) await AS.setItem('current_site_name', sName);
+            if (sIn)   await AS.setItem('current_site_shift_in', sIn);
+            if (sOut)  await AS.setItem('current_site_shift_out', sOut);
+            if (gType) await AS.setItem('guard_type', gType);
+          } catch (_) { /* ignore */ }
+          if (pName || lName || sName) break; // got what we need
+        }
+
         // Process only today's logs to find the latest TIME_IN and TIME_OUT
         for (const log of todayLogs) {
           const action = normalizeAction(log.action);
@@ -370,18 +430,68 @@ export default function HomeScreen() {
         }
         
         if (fetchSeq !== attendanceFetchSeqRef.current) return;
-        if (latestTimeIn || (approvedTimeInRequest && approvedTimeInRequest.requested_time)) {
-          setClockInTime(formattedTimeIn);
-        }
-        if (latestTimeOut || (approvedTimeOutRequest && approvedTimeOutRequest.requested_time)) {
-          setClockOutTime(formattedTimeOut);
-        }
+        
+        // Always compare cache vs API — cache wins if it is more recent (API may lag behind)
+        try {
+          const AS = require('@react-native-async-storage/async-storage').default;
+          const cachedInDate = await AS.getItem('last_time_in_date');
+          if (cachedInDate === today) {
+            const cachedIn = await AS.getItem('last_time_in');
+            if (cachedIn) {
+              const cachedTs = getLogComparableTimestamp({ time: cachedIn }, today);
+              const apiTs    = latestTimeIn ? getLogComparableTimestamp({ time: latestTimeIn }, today) : Number.NEGATIVE_INFINITY;
+              if (cachedTs >= apiTs) {
+                latestTimeIn = cachedIn;
+                formattedTimeIn = formatDisplayTime(cachedIn);
+              }
+            }
+          }
+          const cachedOutDate = await AS.getItem('last_time_out_date');
+          if (cachedOutDate === today) {
+            const cachedOut = await AS.getItem('last_time_out');
+            if (cachedOut) {
+              const cachedTs = getLogComparableTimestamp({ time: cachedOut }, today);
+              const apiTs    = latestTimeOut ? getLogComparableTimestamp({ time: latestTimeOut }, today) : Number.NEGATIVE_INFINITY;
+              if (cachedTs >= apiTs) {
+                latestTimeOut = cachedOut;
+                formattedTimeOut = formatDisplayTime(cachedOut);
+              }
+            }
+          }
+        } catch (_) { /* ignore */ }
+
+        // Always update both time displays (use '— : — : —' if truly nothing found)
+        setClockInTime(latestTimeIn ? formattedTimeIn : '— : — : —');
+        setClockOutTime(latestTimeOut ? formattedTimeOut : '— : — : —');
 
         console.log('DEBUG: Updated times - Time In:', latestTimeIn, 'Time Out:', latestTimeOut);
         console.log('DEBUG: Final displayed times - Time In:', formattedTimeIn, 'Time Out:', formattedTimeOut);
       } else {
         console.log('DEBUG: No attendance data found. Message:', result.message);
-        
+
+        // Fall back to locally cached times written by _layout.tsx after a successful time-in/out
+        try {
+          const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+          const cachedDate = await AsyncStorage.getItem('last_time_in_date');
+          if (cachedDate === today) {
+            const cachedIn = await AsyncStorage.getItem('last_time_in');
+            if (cachedIn) {
+              setClockInTime(formatDisplayTime(cachedIn));
+              console.log('DEBUG: Set time in from local cache:', cachedIn);
+            }
+          }
+          const cachedOutDate = await AsyncStorage.getItem('last_time_out_date');
+          if (cachedOutDate === today) {
+            const cachedOut = await AsyncStorage.getItem('last_time_out');
+            if (cachedOut) {
+              setClockOutTime(formatDisplayTime(cachedOut));
+              console.log('DEBUG: Set time out from local cache:', cachedOut);
+            }
+          }
+        } catch (e) {
+          console.warn('DEBUG: Could not read cached times:', e);
+        }
+
         // Even if no attendance data, check if we have approved change requests to display
         if (fetchSeq !== attendanceFetchSeqRef.current) return;
         if (approvedTimeInRequest && approvedTimeInRequest.requested_time) {
@@ -572,6 +682,37 @@ export default function HomeScreen() {
           <Text style={styles.dateText}>{currentDate}</Text>
           
           <View style={styles.timeCard}>
+            {/* Site / location info */}
+            {(lguName || siteName) ? (
+              <View style={styles.siteInfoSection}>
+                {lguName ? (
+                  <Text style={styles.siteCity}>{lguName}</Text>
+                ) : null}
+                {provinceName ? (
+                  <Text style={styles.siteProvince}>{provinceName}</Text>
+                ) : null}
+                {(siteCode || siteName) ? (
+                  <View style={styles.siteNameRow}>
+                    <Ionicons name="location-outline" size={14} color={theme.muted} />
+                    <Text style={styles.siteNameText} numberOfLines={1}>
+                      {siteCode && siteName ? `${siteCode} - ${siteName}` : siteCode || siteName}
+                    </Text>
+                  </View>
+                ) : null}54r8
+                {guardType ? (
+                  <View style={styles.guardTypeRow}>
+                    <Ionicons name="shield-checkmark-outline" size={14} color={theme.primary} />
+                    <Text style={styles.guardTypeText}>{guardType}</Text>
+                  </View>
+                ) : null}
+                {(shiftIn || shiftOut) ? (
+                  <Text style={styles.shiftTimeText}>
+                    Shift Time ({shiftIn || '—'} - {shiftOut || '—'})
+                  </Text>
+                ) : null}
+                <View style={styles.siteInfoDivider} />
+              </View>
+            ) : null}
             <View style={styles.clockInOutContainer}>
             <View style={styles.clockInOutItem}>
               <Text style={styles.clockInOutLabel}>Time In</Text>
@@ -824,6 +965,63 @@ const createStyles = (theme: ThemeShape) =>
       width: 1,
       height: 50,
       backgroundColor: theme.border,
+    },
+    siteInfoSection: {
+      alignItems: 'center',
+      marginBottom: 12,
+    },
+    siteCity: {
+      fontSize: 18,
+      fontWeight: '700',
+      color: theme.text,
+      fontFamily: 'Poppins',
+      textAlign: 'center',
+    },
+    siteProvince: {
+      fontSize: 15,
+      fontWeight: '600',
+      fontFamily: 'Poppins',
+      marginBottom: 6,
+      textAlign: 'center',
+    },
+    siteNameRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+      marginBottom: 4,
+    },
+    siteNameText: {
+      fontSize: 18,
+      color: theme.text,
+      fontFamily: 'Poppins',
+      fontWeight: '700',
+      flexShrink: 1,
+    },
+    guardTypeRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+      marginBottom: 4,
+    },
+    guardTypeText: {
+      fontSize: 13,
+      color: theme.primary,
+      fontFamily: 'Poppins',
+      fontWeight: '600',
+    },
+    shiftTimeText: {
+      fontSize: 12,
+      color: theme.muted,
+      fontFamily: 'Poppins',
+      marginBottom: 4,
+      textAlign: 'center',
+    },
+    siteInfoDivider: {
+      width: '100%',
+      height: 1,
+      backgroundColor: theme.border,
+      marginTop: 8,
+      marginBottom: 12,
     },
     content: { padding: 20, flex: 1 },
     sectionTitle: {

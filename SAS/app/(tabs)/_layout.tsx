@@ -134,6 +134,7 @@ export default function TabLayout() {
         if (siteCtx) {
           const site = await siteService.getById(siteCtx.siteId);
           if (site) {
+            await siteService.setCurrentSite(site);
             setCurrentSite(site);
           }
         }
@@ -217,11 +218,9 @@ export default function TabLayout() {
         throw new Error('Failed to acquire location');
       }
 
-      setLocationAccuracy(location.coords.accuracy ?? null);
-      setLocationCoords({ lat: location.coords.latitude, lon: location.coords.longitude });
-
       const userLat = location.coords.latitude;
       const userLon = location.coords.longitude;
+      const gpsAccuracy = location.coords.accuracy ?? 0;
 
       console.log(`[AutoSiteResolution] User location: ${userLat}, ${userLon}`);
 
@@ -232,10 +231,25 @@ export default function TabLayout() {
       }
 
       const sites = await siteService.getNearby(userLat, userLon, Number(user.user_company_id));
-      console.log(`[AutoSiteResolution] Found ${sites.length} nearby sites`);
+      console.log(`[AutoSiteResolution] Found ${sites.length} nearby sites; gpsAccuracy=${gpsAccuracy.toFixed(1)}m`);
+      sites.forEach((s) => {
+        const d = siteService.calculateDistance(userLat, userLon, s.latitude, s.longitude);
+        console.log(`[AutoSiteResolution]  site id=${s.id} name="${s.name}" lat=${s.latitude} lon=${s.longitude} radius=${s.radius}m distance=${d.toFixed(1)}m`);
+      });
 
       // Find nearest valid site (within geofence)
-      const nearestSite = await siteService.findNearestValidSite(userLat, userLon, sites);
+      let nearestSite = await siteService.findNearestValidSite(userLat, userLon, sites, gpsAccuracy);
+
+      // Fallback: GPS drift or inaccurate DB coordinates can push user outside the radius.
+      // Use the absolute nearest site with no distance cap as last resort.
+      if (!nearestSite && sites.length > 0) {
+        const fallback = siteService.findNearestSite(userLat, userLon, sites);
+        if (fallback) {
+          const dist = siteService.calculateDistance(userLat, userLon, fallback.latitude, fallback.longitude);
+          console.warn(`[AutoSiteResolution] Outside strict geofence; using nearest site fallback: id=${fallback.id} name="${fallback.name}" dist=${dist.toFixed(1)}m`);
+          nearestSite = fallback;
+        }
+      }
 
       if (!nearestSite) {
         throw new Error('No sites within geofence radius');
@@ -283,11 +297,11 @@ export default function TabLayout() {
     setIsTimeInLoading(true);
 
     try {
-      // Auto-resolve site from geofence
-      let site = currentSite;
-      if (!site) {
-        console.log('[TimeIn] Current site not set, auto-resolving...');
-        site = await autoResolveSiteFromGeofence();
+      // Always refresh site from geofence to avoid stale startup context
+      let site = await autoResolveSiteFromGeofence();
+      if (!site && currentSite) {
+        console.log('[TimeIn] Geofence resolve failed; using last known current site');
+        site = currentSite;
       }
 
       if (!site) {
@@ -314,6 +328,13 @@ export default function TabLayout() {
    */
   const performTimeIn = async (site: Site) => {
     try {
+      // Refresh full site record to ensure all required API fields are present
+      const fullSite = await siteService.getById(site.id);
+      const submitSite: Site = {
+        ...site,
+        ...(fullSite || {}),
+      };
+
       // Get user data
       const userData = await authService.getUserData();
       if (!userData?.access_token || !userData?.employee_id || !userData?.user_company_id) {
@@ -333,13 +354,16 @@ export default function TabLayout() {
       const distance = siteService.calculateDistance(
         location.coords.latitude,
         location.coords.longitude,
-        site.latitude,
-        site.longitude
+        submitSite.latitude,
+        submitSite.longitude
       );
+      const gpsAccuracy = location.coords.accuracy ?? 0;
+      const accuracyBuffer = Math.min(Math.max(gpsAccuracy, 0), 120);
+      const effectiveRadius = (submitSite.radius > 0 ? submitSite.radius : 75) + accuracyBuffer;
 
-      if (distance > site.radius) {
+      if (distance > effectiveRadius) {
         throw new Error(
-          `You are not within the allowed site area.\nDistance: ${distance.toFixed(2)}m\nAllowed radius: ${site.radius.toFixed(2)}m`
+          `You are not within the allowed site area.\nDistance: ${distance.toFixed(2)}m\nAllowed radius: ${effectiveRadius.toFixed(2)}m`
         );
       }
 
@@ -362,15 +386,30 @@ export default function TabLayout() {
       // Post attendance using site-first service
       const timestamp = dateTime.toISOString();
       const result = await attendanceService.postAttendanceWithSiteFallback({
-        siteId: site.id,
+        siteId: submitSite.id,
         action: 'time_in',
         timestamp,
         employeeId: Number(userData.employee_id),
         companyId: Number(userData.user_company_id),
+        guardName: userData.userName || undefined,
+        shiftIn: submitSite.shiftIn,
+        shiftOut: submitSite.shiftOut,
+        shift: submitSite.shift,
+        siteLat: submitSite.latitude,
+        siteLong: submitSite.longitude,
+        latitude: submitSite.latitude,
+        longitude: submitSite.longitude,
+        provinceId: submitSite.provinceId,
+        clientId: submitSite.clientId,
+        lguId: submitSite.lguId,
       });
 
       if (!result.success) {
-        throw new Error('Failed to submit time-in. Please try again.');
+        const details =
+          (typeof result.data === 'string' ? result.data : result.data?.message || result.data?.error) ||
+          result.error ||
+          'Please try again.';
+        throw new Error(`Failed to submit time-in. ${details}`);
       }
 
       Alert.alert('Success', 'Time In recorded successfully!');
@@ -407,11 +446,11 @@ export default function TabLayout() {
     setIsTimeOutLoading(true);
 
     try {
-      // Auto-resolve site from geofence
-      let site = currentSite;
-      if (!site) {
-        console.log('[TimeOut] Current site not set, auto-resolving...');
-        site = await autoResolveSiteFromGeofence();
+      // Always refresh site from geofence to avoid stale startup context
+      let site = await autoResolveSiteFromGeofence();
+      if (!site && currentSite) {
+        console.log('[TimeOut] Geofence resolve failed; using last known current site');
+        site = currentSite;
       }
 
       if (!site) {
@@ -438,6 +477,13 @@ export default function TabLayout() {
    */
   const performTimeOut = async (site: Site) => {
     try {
+      // Refresh full site record to ensure all required API fields are present
+      const fullSite = await siteService.getById(site.id);
+      const submitSite: Site = {
+        ...site,
+        ...(fullSite || {}),
+      };
+
       // Get user data
       const userData = await authService.getUserData();
       if (!userData?.access_token || !userData?.employee_id || !userData?.user_company_id) {
@@ -457,13 +503,16 @@ export default function TabLayout() {
       const distance = siteService.calculateDistance(
         location.coords.latitude,
         location.coords.longitude,
-        site.latitude,
-        site.longitude
+        submitSite.latitude,
+        submitSite.longitude
       );
+      const gpsAccuracy = location.coords.accuracy ?? 0;
+      const accuracyBuffer = Math.min(Math.max(gpsAccuracy, 0), 120);
+      const effectiveRadius = (submitSite.radius > 0 ? submitSite.radius : 75) + accuracyBuffer;
 
-      if (distance > site.radius) {
+      if (distance > effectiveRadius) {
         throw new Error(
-          `You are not within the allowed site area.\nDistance: ${distance.toFixed(2)}m\nAllowed radius: ${site.radius.toFixed(2)}m`
+          `You are not within the allowed site area.\nDistance: ${distance.toFixed(2)}m\nAllowed radius: ${effectiveRadius.toFixed(2)}m`
         );
       }
 
@@ -486,15 +535,30 @@ export default function TabLayout() {
       // Post attendance using site-first service
       const timestamp = dateTime.toISOString();
       const result = await attendanceService.postAttendanceWithSiteFallback({
-        siteId: site.id,
+        siteId: submitSite.id,
         action: 'time_out',
         timestamp,
         employeeId: Number(userData.employee_id),
         companyId: Number(userData.user_company_id),
+        guardName: userData.userName || undefined,
+        shiftIn: submitSite.shiftIn,
+        shiftOut: submitSite.shiftOut,
+        shift: submitSite.shift,
+        siteLat: submitSite.latitude,
+        siteLong: submitSite.longitude,
+        latitude: submitSite.latitude,
+        longitude: submitSite.longitude,
+        provinceId: submitSite.provinceId,
+        clientId: submitSite.clientId,
+        lguId: submitSite.lguId,
       });
 
       if (!result.success) {
-        throw new Error('Failed to submit time-out. Please try again.');
+        const details =
+          (typeof result.data === 'string' ? result.data : result.data?.message || result.data?.error) ||
+          result.error ||
+          'Please try again.';
+        throw new Error(`Failed to submit time-out. ${details}`);
       }
 
       Alert.alert('Success', 'Time Out recorded successfully!');

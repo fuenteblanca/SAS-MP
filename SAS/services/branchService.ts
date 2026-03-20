@@ -5,6 +5,7 @@ const BASE_URL = 'https://api.rds.ismis.com.ph';
 export interface Branch {
   id: number;
   branch_name: string;
+  branch_code?: string;
   latitude: string | number;
   longitude: string | number;
   radius: string | number;
@@ -73,6 +74,8 @@ class BranchService {
       }
       
       const endpoints = [
+        `${BASE_URL}/api/sites/${id}`,
+        `${BASE_URL}/api/sites/show?id=${id}`,
         `${BASE_URL}/api/branches/${id}`,
         `${BASE_URL}/api/branches/show?id=${id}`,
       ];
@@ -124,7 +127,7 @@ class BranchService {
       }
 
       // Build API URL with query parameters
-      const url = `${BASE_URL}/api/branches/by-company?company_id=${userCompanyId}&latitude=${latitude}&longitude=${longitude}`;
+      const url = `${BASE_URL}/api/sites/by-company?company_id=${userCompanyId}&latitude=${latitude}&longitude=${longitude}`;
       console.log('Fetching branches from:', url);
 
       const response = await fetch(url);
@@ -246,7 +249,7 @@ class BranchService {
         };
       }
 
-      const url = `${BASE_URL}/api/branches/by-company?company_id=${userCompanyId}`;
+      const url = `${BASE_URL}/api/sites/by-company?company_id=${userCompanyId}&latitude=&longitude=`;
       console.log('Fetching branches (no location) from:', url);
       const response = await fetch(url);
       if (!response.ok) {

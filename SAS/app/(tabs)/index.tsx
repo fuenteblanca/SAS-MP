@@ -30,14 +30,6 @@ export default function HomeScreen() {
   const [currentDate, setCurrentDate] = useState('');
   const [clockInTime, setClockInTime] = useState('— : — : —');
   const [clockOutTime, setClockOutTime] = useState('— : — : —');
-  const [branchName, setBranchName] = useState('');
-  const [branchCode, setBranchCode] = useState('');
-  const [branchCluster, setBranchCluster] = useState('');
-  const [branchArea, setBranchArea] = useState('');
-  const [shiftTime, setShiftTime] = useState('');
-  const [guardType, setGuardType] = useState('');
-  const [isTimeInLate, setIsTimeInLate] = useState(false);
-  const [isTimeOutEarly, setIsTimeOutEarly] = useState(false);
   const [requests, setRequests] = useState<any[]>([]);
   const [approvedTimeInChange, setApprovedTimeInChange] = useState<string | null>(null);
   const [approvedTimeOutChange, setApprovedTimeOutChange] = useState<string | null>(null);
@@ -45,6 +37,7 @@ export default function HomeScreen() {
   const [showTrackingModal, setShowTrackingModal] = useState(false);
   const [trackingItem, setTrackingItem] = useState<any | null>(null);
   const appliedApprovedIdsRef = React.useRef<Set<string>>(new Set());
+  const attendanceFetchSeqRef = React.useRef(0);
 
   // Helper to resolve reviewer display name from mapped/raw fields
   const getReviewerDisplayName = (item: any): string => {
@@ -114,14 +107,22 @@ export default function HomeScreen() {
     if (!timeStr) return '— : — : —';
     
     try {
-      // If time is in format "HH:MM:SS" or "HH:MM:SS.000000", extract just HH:MM:SS
-      const timePart = timeStr.split('.')[0]; // Remove microseconds if present
-      
-      // If it's a full datetime string, extract just the time part
-      if (timePart.includes(' ')) {
-        return timePart.split(' ')[1];
+      const cleaned = String(timeStr).trim();
+
+      // Handle ISO date/time quickly
+      if (cleaned.includes('T')) {
+        const timePart = cleaned.split('T')[1]?.split('.')[0] || '';
+        return timePart || cleaned;
       }
-      
+
+      // If time is in format "HH:MM:SS" or "HH:MM:SS.000000", extract HH:MM:SS
+      const timePart = cleaned.split('.')[0];
+
+      // If it's a datetime with a space, extract just the time part
+      if (timePart.includes(' ')) {
+        return timePart.split(' ')[1] || timePart;
+      }
+
       return timePart;
     } catch (e) {
       console.error('Error formatting time:', e);
@@ -129,7 +130,54 @@ export default function HomeScreen() {
     }
   };
 
+  const normalizeDateOnly = (value: any): string => {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (raw.includes('T')) return raw.split('T')[0];
+    if (raw.includes(' ')) return raw.split(' ')[0];
+    return raw;
+  };
+
+  const normalizeAction = (value: any): string =>
+    String(value || '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, '_')
+      .replace(/-/g, '_');
+
+  const getLogComparableTimestamp = (log: any, today: string): number => {
+    const candidates = [
+      log.timestamp,
+      log.created_at,
+      log.updated_at,
+      log.datetime,
+      log.date_time,
+      log.time,
+      log.time_in,
+      log.time_out,
+      log.in_time,
+      log.out_time,
+    ];
+
+    for (const item of candidates) {
+      if (!item) continue;
+      const raw = String(item).trim();
+      let isoCandidate = raw;
+      if (/^\d{2}:\d{2}(:\d{2})?(\.\d+)?$/.test(raw)) {
+        const t = raw.split('.')[0];
+        isoCandidate = `${today}T${t.length === 5 ? `${t}:00` : t}`;
+      } else if (/^\d{4}-\d{2}-\d{2} /.test(raw)) {
+        isoCandidate = raw.replace(' ', 'T');
+      }
+      const parsed = Date.parse(isoCandidate);
+      if (!Number.isNaN(parsed)) return parsed;
+    }
+
+    return Number.NEGATIVE_INFINITY;
+  };
+
   const fetchTodayAttendance = async () => {
+    const fetchSeq = ++attendanceFetchSeqRef.current;
     try {
       const userData = await authService.getUserData();
       if (!userData.access_token || !userData.employee_id) {
@@ -140,44 +188,7 @@ export default function HomeScreen() {
       const today = formatDate(new Date());
       console.log('DEBUG: Fetching attendance for employee_id=', userData.employee_id, 'date=', today);
       
-      // Fetch branch name, guard type, and shift time from AsyncStorage
-        const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-      const storedBranchName = await AsyncStorage.getItem('user_branch_name');
-      const storedBranchCode = await AsyncStorage.getItem('user_branch_code');
-      const storedClusterName = await AsyncStorage.getItem('branch_cluster_name');
-      const storedAreaName = await AsyncStorage.getItem('branch_area_name');
-      const storedGuardType = await AsyncStorage.getItem('guard_type');
-      
-      // Determine if today is weekend
-      const now = new Date();
-      const dayOfWeek = now.getDay(); // 0 = Sunday, 6 = Saturday
-      const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
-      
-      // Get appropriate shift time based on day
-      let shiftInTime = null;
-      let shiftOutTime = null;
-      if (isWeekend) {
-        shiftInTime = await AsyncStorage.getItem('branch_weekend_in');
-        shiftOutTime = await AsyncStorage.getItem('branch_weekend_out');
-      } else {
-        shiftInTime = await AsyncStorage.getItem('branch_weekday_in');
-        shiftOutTime = await AsyncStorage.getItem('branch_weekday_out');
-      }
-      
-      // Format shift time display
-      if (shiftInTime && shiftOutTime) {
-        setShiftTime(`${shiftInTime} - ${shiftOutTime}`);
-      } else if (shiftInTime) {
-        setShiftTime(shiftInTime);
-      }
-      
-      setBranchName(storedBranchName || '');
-      setBranchCode(storedBranchCode || '');
-      setBranchCluster(storedClusterName || '');
-      setBranchArea(storedAreaName || '');
-      if (storedGuardType) {
-        setGuardType(storedGuardType);
-      }
+      if (fetchSeq !== attendanceFetchSeqRef.current) return;
 
       // Check for approved change requests for today
       const changeRequestResult = await attendanceService.getChangeRequests(Number(userData.employee_id), today);
@@ -249,7 +260,7 @@ export default function HomeScreen() {
             if (reqAction !== 'time_in' && reqAction !== 'time_out') return;
 
             const attendanceInfo = await attendanceService.getAttendanceForDate(today, true);
-            const branchId = attendanceInfo?.branchId || Number(userData.user_branch_id) || 0;
+            const branchId = attendanceInfo?.branchId || 0;
             const guardType = attendanceInfo?.guardType || 'Regular';
             const guardAttendanceId = reqAction === 'time_in' ? attendanceInfo?.timeInId : attendanceInfo?.timeOutId;
             const requestedTime = String(approvedReq.requested_time || approvedReq.time || '').trim();
@@ -293,8 +304,7 @@ export default function HomeScreen() {
         
         // Strictly filter records for today only
         const todayLogs = attendanceLogs.filter((log: any) => {
-          const logDate = log.date || log.attendance_date;
-          // Match exact date in YYYY-MM-DD format
+          const logDate = normalizeDateOnly(log.date || log.attendance_date || log.timestamp || log.created_at);
           return logDate === today;
         });
 
@@ -302,15 +312,34 @@ export default function HomeScreen() {
 
         // Process only today's logs to find the latest TIME_IN and TIME_OUT
         for (const log of todayLogs) {
-          if (log.action === 'TIME_IN' || log.action === 'time_in') {
-            // Keep the latest TIME_IN by comparing times
-            if (!latestTimeIn || log.time > latestTimeIn) {
-              latestTimeIn = log.time;
+          const action = normalizeAction(log.action);
+          const isTimeIn = action === 'time_in' || action === 'in' || action === 'clock_in';
+          const isTimeOut = action === 'time_out' || action === 'out' || action === 'clock_out';
+          const logTime =
+            log.time ||
+            log.time_in ||
+            log.time_out ||
+            log.in_time ||
+            log.out_time ||
+            log.timestamp ||
+            log.created_at ||
+            null;
+
+          const ts = getLogComparableTimestamp(log, today);
+
+          if (isTimeIn) {
+            const currentBest = latestTimeIn
+              ? getLogComparableTimestamp({ time: latestTimeIn }, today)
+              : Number.NEGATIVE_INFINITY;
+            if (ts >= currentBest) {
+              latestTimeIn = logTime;
             }
-          } else if (log.action === 'TIME_OUT' || log.action === 'time_out') {
-            // Keep the latest TIME_OUT by comparing times
-            if (!latestTimeOut || log.time > latestTimeOut) {
-              latestTimeOut = log.time;
+          } else if (isTimeOut) {
+            const currentBest = latestTimeOut
+              ? getLogComparableTimestamp({ time: latestTimeOut }, today)
+              : Number.NEGATIVE_INFINITY;
+            if (ts >= currentBest) {
+              latestTimeOut = logTime;
             }
           }
         }
@@ -340,28 +369,13 @@ export default function HomeScreen() {
           console.log('✗ DEBUG: No approved TimeOut request to override');
         }
         
-        // Check if time in is late (after shift start time)
-        // Use approved time if available, otherwise use actual time
-        const timeInToCheck = approvedTimeInRequest?.requested_time || latestTimeIn;
-        if (timeInToCheck && shiftInTime) {
-          const timeInStr = timeInToCheck.split('.')[0]; // Remove microseconds
-          setIsTimeInLate(timeInStr > shiftInTime);
-        } else {
-          setIsTimeInLate(false);
+        if (fetchSeq !== attendanceFetchSeqRef.current) return;
+        if (latestTimeIn || (approvedTimeInRequest && approvedTimeInRequest.requested_time)) {
+          setClockInTime(formattedTimeIn);
         }
-        
-        // Check if time out is early (before shift end time)
-        // Use approved time if available, otherwise use actual time
-        const timeOutToCheck = approvedTimeOutRequest?.requested_time || latestTimeOut;
-        if (timeOutToCheck && shiftOutTime) {
-          const timeOutStr = timeOutToCheck.split('.')[0]; // Remove microseconds
-          setIsTimeOutEarly(timeOutStr < shiftOutTime);
-        } else {
-          setIsTimeOutEarly(false);
+        if (latestTimeOut || (approvedTimeOutRequest && approvedTimeOutRequest.requested_time)) {
+          setClockOutTime(formattedTimeOut);
         }
-        
-        setClockInTime(formattedTimeIn);
-        setClockOutTime(formattedTimeOut);
 
         console.log('DEBUG: Updated times - Time In:', latestTimeIn, 'Time Out:', latestTimeOut);
         console.log('DEBUG: Final displayed times - Time In:', formattedTimeIn, 'Time Out:', formattedTimeOut);
@@ -369,17 +383,12 @@ export default function HomeScreen() {
         console.log('DEBUG: No attendance data found. Message:', result.message);
         
         // Even if no attendance data, check if we have approved change requests to display
+        if (fetchSeq !== attendanceFetchSeqRef.current) return;
         if (approvedTimeInRequest && approvedTimeInRequest.requested_time) {
           const formattedTimeIn = formatDisplayTime(approvedTimeInRequest.requested_time);
           setClockInTime(formattedTimeIn);
           setApprovedTimeInChange(approvedTimeInRequest.requested_time);
           console.log('DEBUG: Set time in from approved request (no attendance):', formattedTimeIn);
-          
-          // Check if time in is late
-          if (shiftInTime) {
-            const timeInStr = approvedTimeInRequest.requested_time.split('.')[0];
-            setIsTimeInLate(timeInStr > shiftInTime);
-          }
         }
         
         if (approvedTimeOutRequest && approvedTimeOutRequest.requested_time) {
@@ -387,12 +396,6 @@ export default function HomeScreen() {
           setClockOutTime(formattedTimeOut);
           setApprovedTimeOutChange(approvedTimeOutRequest.requested_time);
           console.log('DEBUG: Set time out from approved request (no attendance):', formattedTimeOut);
-          
-          // Check if time out is early
-          if (shiftOutTime) {
-            const timeOutStr = approvedTimeOutRequest.requested_time.split('.')[0];
-            setIsTimeOutEarly(timeOutStr < shiftOutTime);
-          }
         }
       }
     } catch (error) {
@@ -555,10 +558,6 @@ export default function HomeScreen() {
     }
   };
    
-  const branchDisplayName = branchCode && branchName
-    ? `${branchCode} - ${branchName}`
-    : (branchName || branchCode);
-
   return (
     <ScrollView style={styles.screen} contentContainerStyle={{ paddingBottom: 100 }}>
       {/* Header */}
@@ -573,56 +572,10 @@ export default function HomeScreen() {
           <Text style={styles.dateText}>{currentDate}</Text>
           
           <View style={styles.timeCard}>
-            {branchName ? (
-              <View style={styles.branchInfoContainer}>
-                {(branchCluster || branchArea) ? (
-                  <View style={styles.branchMetaContainer}>
-                    {branchCluster ? <Text style={styles.branchClusterText}>{branchCluster}</Text> : null}
-                    {branchArea ? (
-                      <Text style={styles.branchAreaText}>Area: {branchArea}</Text>
-                    ) : null}
-                  </View>
-                ) : null}
-                <View style={styles.branchRow}>
-                  <Image 
-                    source={require('@/assets/images/branch.png')} 
-                    style={styles.branchIcon}
-                  />
-                  <Text
-                    style={styles.branchText}
-                    numberOfLines={1}
-                    adjustsFontSizeToFit={true}
-                    minimumFontScale={0.7}
-                    ellipsizeMode="tail"
-                  >
-                    {branchDisplayName}
-                  </Text>
-                </View>
-                {guardType ? (
-                  <View style={styles.guardTypeRow}>
-                    <Image 
-                      source={require('@/assets/images/guard_type.png')} 
-                      style={styles.guardTypeIcon}
-                    />
-                    <Text style={styles.guardTypeText}>{guardType}</Text>
-                  </View>
-                ) : null}
-                {shiftTime ? (
-                  <Text style={styles.shiftTimeText}>Shift Time ({shiftTime})</Text>
-                ) : null}
-              </View>
-            ) : null}
-            
             <View style={styles.clockInOutContainer}>
             <View style={styles.clockInOutItem}>
               <Text style={styles.clockInOutLabel}>Time In</Text>
-              <Text style={[
-                clockInTime === '— : — : —' 
-                  ? styles.clockInOutValueGrey 
-                  : isTimeInLate 
-                    ? styles.clockInOutValueOrange 
-                    : styles.clockInOutValueGreen
-              ]}>
+              <Text style={clockInTime === '— : — : —' ? styles.clockInOutValueGrey : styles.clockInOutValueGreen}>
                 {clockInTime} 
               </Text>
             </View>
@@ -631,13 +584,7 @@ export default function HomeScreen() {
             
             <View style={styles.clockInOutItem}>
               <Text style={styles.clockInOutLabel}>Time Out</Text>
-              <Text style={[
-                clockOutTime === '— : — : —' 
-                  ? styles.clockInOutValueGrey 
-                  : isTimeOutEarly 
-                    ? styles.clockInOutValueOrange 
-                    : styles.clockInOutValueGreen
-              ]}>
+              <Text style={clockOutTime === '— : — : —' ? styles.clockInOutValueGrey : styles.clockInOutValueGreen}>
                 {clockOutTime}
               </Text>
             </View>
@@ -828,74 +775,6 @@ const createStyles = (theme: ThemeShape) =>
       shadowRadius: 12,
       shadowOffset: { width: 0, height: 6 },
       elevation: theme.scheme === 'dark' ? 10 : 5,
-    },
-    branchInfoContainer: {
-      alignItems: 'center',
-      marginBottom: 16,
-    },
-    branchMetaContainer: {
-      alignItems: 'center',
-      marginBottom: 6,
-    },
-    branchClusterText: {
-      fontSize: 15,
-      color: theme.text,
-      fontFamily: 'Poppins',
-      fontWeight: '700',
-    },
-    branchAreaText: {
-      fontSize: 13,
-      color: theme.muted,
-      fontFamily: 'Poppins',
-      fontWeight: '600',
-      marginTop: 2,
-    },
-    branchRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'center',
-      marginBottom: 4,
-    },
-    branchIcon: {
-      width: 18,
-      height: 18,
-      marginRight: 6,
-      tintColor: theme.primary,
-    },
-    branchText: {
-      fontSize: 16,
-      color: theme.text,
-      fontFamily: 'Poppins',
-      fontWeight: '700',
-      marginBottom: 4,
-      textAlign: 'center',
-      flexShrink: 1,
-      // allow long branch names to wrap and not push layout off-center
-      includeFontPadding: false,
-    },
-    guardTypeRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      marginBottom: 4,
-    },
-    guardTypeIcon: {
-      width: 17,
-      height: 17,
-      marginRight: 6,
-      tintColor: theme.accent,
-    },
-    guardTypeText: {
-      fontSize: 15,
-      color: theme.secondaryText,
-      fontFamily: 'Poppins',
-      fontWeight: '600',
-      marginBottom: 4,
-    },
-    shiftTimeText: {
-      fontSize: 12,
-      color: theme.muted,
-      fontFamily: 'Poppins',
-      fontWeight: '600',
     },
     clockInOutContainer: {
       flexDirection: 'row',

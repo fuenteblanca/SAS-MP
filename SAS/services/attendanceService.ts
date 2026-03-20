@@ -1,15 +1,48 @@
 import authService from './authService';
 
-const BASE = 'https://api.rds.ismis.com.ph/api/guard-attendance';
+const BASE = 'https://api.rds.ismis.com.ph/api/mp-guard-attendance';
 
 async function safeParse(text: string) {
 	try { return JSON.parse(text); } catch { return text; }
 }
 
+function extractApiMessage(data: any): string | undefined {
+	if (!data) return undefined;
+	if (typeof data === 'string') {
+		const trimmed = data.trim();
+		return trimmed || undefined;
+	}
+	if (typeof data.message === 'string' && data.message.trim()) return data.message.trim();
+	if (typeof data.error === 'string' && data.error.trim()) return data.error.trim();
+	if (typeof data.errors === 'string' && data.errors.trim()) return data.errors.trim();
+	if (Array.isArray(data.errors) && data.errors.length > 0) {
+		return data.errors.map((item: any) => String(item)).join(', ');
+	}
+	if (data.errors && typeof data.errors === 'object') {
+		const firstError = Object.values(data.errors).flat().find(Boolean);
+		if (firstError) return String(firstError);
+	}
+	return undefined;
+}
+
+function buildFormData(payload: Record<string, any>) {
+	const formData = new FormData();
+	Object.entries(payload).forEach(([key, value]) => {
+		formData.append(key, String(value));
+	});
+	return formData;
+}
+
+function buildUrlEncodedBody(payload: Record<string, any>) {
+	return Object.entries(payload)
+		.map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`)
+		.join('&');
+}
+
 export default {
 	/**
 	 * Fetch overtime-related attendance records for a given employee and date.
-	 * This calls: GET /api/guard-attendance/overtime?employee_id=...&date=...&action=time_out
+	 * This calls: GET /api/mp-guard-attendance/overtime?employee_id=...&date=...&action=time_out
 	 */
 	fetchOvertimeAttendances: async (employeeId: number, date: string, action = 'time_out') => {
 		try {
@@ -157,7 +190,7 @@ export default {
 
 	/**
 	 * Fetch OT requests specifically (uses authorization header).
-	 * Calls: GET /api/guard-attendance/ot-requests?employee_id=...
+	 * Calls: GET /api/mp-guard-attendance/ot-requests?employee_id=...
 	 */
 	fetchOtRequests: async (employeeId: number, date?: string) => {
 		try {
@@ -504,44 +537,156 @@ export default {
 		employeeId: number;
 		companyId: number;
 		guardType?: string;
+		guardName?: string;
+		shiftIn?: string;
+		shiftOut?: string;
+		shift?: string;
+		siteLat?: number;
+		siteLong?: number;
+		latitude?: number;
+		longitude?: number;
+		provinceId?: number;
+		clientId?: number;
+		lguId?: number;
 	}) => {
 		try {
 			const user = await authService.getUserData();
 			const token = user?.access_token;
 
-			// Build payload with site-first intent but branch-compatible structure for current API
-			const payload: any = {
+			// Build exact payload matching /api/mp-guard-attendance contract
+			const strictPayload: Record<string, any> = {
+				site_id: Number(args.siteId),
 				employee_id: args.employeeId,
-				branch_id: args.siteId, // Fallback: map site_id to branch_id for legacy API
-				company_id: args.companyId,
+				guard_name: args.guardName || user?.userName || '',
 				action: args.action,
-				timestamp: args.timestamp,
-				time: args.timestamp,
+				shift_in: args.shiftIn,
+				shift_out: args.shiftOut,
+				shift: args.shift,
+				site_lat: args.siteLat,
+				site_long: args.siteLong,
+				latitude: args.latitude,
+				longitude: args.longitude,
+				province_id: args.provinceId,
+				client_id: args.clientId,
+				lgu_id: args.lguId,
+				company_id: args.companyId,
 			};
 
-			if (args.guardType) {
-				payload.guard_type = args.guardType;
+			const requiredKeys = [
+				'site_id',
+				'employee_id',
+				'guard_name',
+				'action',
+				'shift_in',
+				'shift_out',
+				'shift',
+				'site_lat',
+				'site_long',
+				'latitude',
+				'longitude',
+				'province_id',
+				'client_id',
+				'lgu_id',
+				'company_id',
+			] as const;
+
+			const missingRequired = requiredKeys.filter((key) => {
+				const value = strictPayload[key];
+				if (value === undefined || value === null) return true;
+				if (typeof value === 'string' && value.trim() === '') return true;
+				if (typeof value === 'number' && Number.isNaN(value)) return true;
+				return false;
+			});
+
+			if (missingRequired.length > 0) {
+				return {
+					success: false,
+					error: `Missing required fields: ${missingRequired.join(', ')}`,
+					data: { missing: missingRequired },
+				};
 			}
 
 			const url = `${BASE}`;
-			const res = await fetch(url, {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					Accept: 'application/json',
-					Authorization: token ? `Bearer ${token}` : '',
+			const baseHeaders: Record<string, string> = {
+				Accept: 'application/json',
+			};
+			if (token) {
+				baseHeaders.Authorization = `Bearer ${token}`;
+			}
+
+			const attempts: Array<{
+				name: string;
+				headers: Record<string, string>;
+				body: any;
+			}> = [
+				{
+					name: 'json-strict',
+					headers: {
+						...baseHeaders,
+						'Content-Type': 'application/json',
+					},
+					body: JSON.stringify(strictPayload),
 				},
-				body: JSON.stringify(payload),
-			});
+				{
+					name: 'form-data-strict',
+					headers: baseHeaders,
+					body: buildFormData(strictPayload),
+				},
+				{
+					name: 'x-www-form-urlencoded-strict',
+					headers: {
+						...baseHeaders,
+						'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+					},
+					body: buildUrlEncodedBody(strictPayload),
+				},
+			];
 
-			const text = await res.text();
-			const data = await safeParse(text);
+			let lastFailure: any = { success: false, error: 'Failed to submit attendance' };
 
-			console.log(
-				`[AttendanceService] ${args.action} posted. Site/Branch ID: ${args.siteId}, Status: ${res.status}`
-			);
+			for (const attempt of attempts) {
+				try {
+					const res = await fetch(url, {
+						method: 'POST',
+						headers: attempt.headers,
+						body: attempt.body,
+					});
 
-			return { success: res.ok, status: res.status, data };
+					const text = await res.text();
+					const data = await safeParse(text);
+					const message = extractApiMessage(data);
+
+					console.log(
+						`[AttendanceService] ${args.action} via ${attempt.name}. Site ID: ${args.siteId}, Status: ${res.status}`
+					);
+
+					if (res.ok) {
+						return { success: true, status: res.status, data, requestFormat: attempt.name };
+					}
+
+					lastFailure = {
+						success: false,
+						status: res.status,
+						data,
+						error: message || `Server returned status ${res.status}`,
+						requestFormat: attempt.name,
+					};
+
+					console.warn(
+						`[AttendanceService] ${args.action} failed via ${attempt.name}:`,
+						lastFailure.error
+					);
+				} catch (e: any) {
+					lastFailure = {
+						success: false,
+						error: e.message || e,
+						requestFormat: attempt.name,
+					};
+					console.warn(`[AttendanceService] ${args.action} network error via ${attempt.name}:`, e);
+				}
+			}
+
+			return lastFailure;
 		} catch (e: any) {
 			console.error(`[AttendanceService] Error posting ${args.action}:`, e);
 			return { success: false, error: e.message || e };

@@ -18,7 +18,9 @@ export const SITE_STORAGE_KEYS = {
   CURRENT_SITE_LATITUDE: 'current_site_latitude',
   CURRENT_SITE_LONGITUDE: 'current_site_longitude',
   CURRENT_SITE_RADIUS: 'current_site_radius',
+  CURRENT_SITE_LGU: 'current_site_lgu',
   CURRENT_SITE_CLUSTER: 'current_site_cluster',
+  CURRENT_SITE_PROVINCE: 'current_site_province',
   CURRENT_SITE_AREA: 'current_site_area',
   CURRENT_SITE_CODE: 'current_site_code',
 };

@@ -1,0 +1,33 @@
+diff --git a/node_modules/expo-task-manager/android/src/main/java/expo/modules/taskManager/TaskManagerUtils.java b/node_modules/expo-task-manager/android/src/main/java/expo/modules/taskManager/TaskManagerUtils.java
+index b35c94e..7ec84b6 100644
+--- a/node_modules/expo-task-manager/android/src/main/java/expo/modules/taskManager/TaskManagerUtils.java
++++ b/node_modules/expo-task-manager/android/src/main/java/expo/modules/taskManager/TaskManagerUtils.java
+@@ -24,6 +24,7 @@ import java.util.Set;
+ import androidx.annotation.NonNull;
+ import androidx.collection.ArraySet;
+ 
++import expo.modules.interfaces.taskManager.TaskExecutionCallback;
+ import expo.modules.interfaces.taskManager.TaskInterface;
+ import expo.modules.interfaces.taskManager.TaskManagerUtilsInterface;
+ 
+@@ -88,6 +89,20 @@ public class TaskManagerUtils implements TaskManagerUtilsInterface {
+     return data;
+   }
+ 
++  @Override
++  public void executeTask(TaskInterface task, Bundle data, TaskExecutionCallback callback) {
++    if (task == null) {
++      Log.e(TAG, "Trying to execute null task");
++      return;
++    }
++
++    if (callback != null) {
++      task.execute(data, null, callback);
++    } else {
++      task.execute(data, null);
++    }
++  }
++
+   //endregion TaskManagerUtilsInterface
+   //region static helpers
+ 

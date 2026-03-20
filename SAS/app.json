@@ -1,0 +1,99 @@
+{
+  "expo": {
+    "name": "SAS",
+    "slug": "sas",
+    "version": "2.1.0",
+    "orientation": "default",
+    "icon": "./assets/images/SAS.png",
+    "scheme": "sas",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/images/SAS-splash-screen.png",
+      "resizeMode": "cover",
+      "backgroundColor": "#FFFFFF"
+    },
+  "newArchEnabled": true,
+    "android": {
+      "splash": {
+        "image": "./assets/images/SAS-splash-screen.png",
+        "resizeMode": "cover",
+        "backgroundColor": "#FFFFFF"
+      },
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false,
+      "resizableActivity": true,
+      "permissions": [
+        "INTERNET",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.SCHEDULE_EXACT_ALARM",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED"
+      ],
+      "package": "com.vitech.sas"
+    },
+    "androidNavigationBar": {
+      "backgroundColor": "#F3F4F6",
+      "barStyle": "dark-content"
+    },
+    "ios": {
+      "splash": {
+        "image": "./assets/images/SAS-splash-screen.png",
+        "resizeMode": "cover",
+        "backgroundColor": "#FFFFFF"
+      },
+      "supportsTablet": true,
+      "infoPlist": {
+        "UIRequiresFullScreen": false,
+        "NSLocationWhenInUseUsageDescription": "This app needs access to your location to find nearby branches.",
+        "UIBackgroundModes": [
+          "remote-notification"
+        ],
+        "NSUserNotificationUsageDescription": "Allow SAS to send you reminders for shifts, payslips, loans and announcements.",
+        "NSPhotoLibraryUsageDescription": "Allow SAS to save payslip images to your photo library.",
+        "NSPhotoLibraryAddUsageDescription": "Allow SAS to save payslip images to your photo library."
+      }
+    },
+    "web": {
+      "output": "static",
+      "favicon": "./assets/images/SAS.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Allow SAS to use your location to find nearby branches."
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow SAS to save payslip images to your photo library.",
+          "savePhotosPermission": "Allow SAS to save payslip images to your photo library.",
+          "isAccessMediaLocationEnabled": false,
+          "androidPermissions": [
+            "READ_MEDIA_IMAGES",
+            "WRITE_EXTERNAL_STORAGE"
+          ]
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "a28f5290-117d-4b01-a3b0-3e2ac6f21a01"
+      }
+    },
+    "owner": "jimhue"
+  }
+}

@@ -1,0 +1,1250 @@
+import { useUser } from '@/hooks/use-auth';
+import { useThemeColors } from '@/hooks/use-theme';
+import attendanceService from '@/services/attendanceService';
+import authService from '@/services/authService';
+import eventBus from '@/services/eventBus';
+import { mapRequests } from '@/services/requestMapper';
+import { formatDate } from '@/services/timeService';
+import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, FlatList, Image, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+
+type ThemeShape = ReturnType<typeof useThemeColors>;
+
+function formatToday(date = new Date()) {
+  const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const w = weekdays[(date.getDay() + 6) % 7]; // JS week starts on Sunday
+  const m = months[date.getMonth()];
+  return `${w}, ${date.getDate()} ${m} ${date.getFullYear()} (today)`;
+}
+
+export default function HomeScreen() {
+  const today = formatToday();
+  const { userName } = useUser();
+  const theme = useThemeColors();
+  const styles = useMemo(() => createStyles(theme), [theme]);
+  const stylesRequest = useMemo(() => createRequestStyles(theme), [theme]);
+  const [currentTime, setCurrentTime] = useState('');
+  const [currentDate, setCurrentDate] = useState('');
+  const [clockInTime, setClockInTime] = useState('— : — : —');
+  const [clockOutTime, setClockOutTime] = useState('— : — : —');
+  const [branchName, setBranchName] = useState('');
+  const [branchCode, setBranchCode] = useState('');
+  const [branchCluster, setBranchCluster] = useState('');
+  const [branchArea, setBranchArea] = useState('');
+  const [shiftTime, setShiftTime] = useState('');
+  const [guardType, setGuardType] = useState('');
+  const [isTimeInLate, setIsTimeInLate] = useState(false);
+  const [isTimeOutEarly, setIsTimeOutEarly] = useState(false);
+  const [requests, setRequests] = useState<any[]>([]);
+  const [approvedTimeInChange, setApprovedTimeInChange] = useState<string | null>(null);
+  const [approvedTimeOutChange, setApprovedTimeOutChange] = useState<string | null>(null);
+  const [loadingRequests, setLoadingRequests] = useState(false);
+  const [showTrackingModal, setShowTrackingModal] = useState(false);
+  const [trackingItem, setTrackingItem] = useState<any | null>(null);
+  const appliedApprovedIdsRef = React.useRef<Set<string>>(new Set());
+
+  // Helper to resolve reviewer display name from mapped/raw fields
+  const getReviewerDisplayName = (item: any): string => {
+    const raw = item?.raw || {};
+    const fromFields =
+      item?.reviewerName ||
+      raw.reviewer_name ||
+      raw.reviewed_by_name ||
+      (raw.reviewer && (raw.reviewer.name || raw.reviewer.full_name)) ||
+      (raw.reviewed_by_user && raw.reviewed_by_user.name);
+    if (fromFields) return String(fromFields);
+    // Do NOT display numeric ID; show a neutral placeholder until name is resolved
+    return 'Reviewer';
+  };
+
+  useEffect(() => {
+    updateTime();
+    const interval = setInterval(updateTime, 1000);
+    fetchTodayAttendance();
+    loadChangeRequests();
+    // Subscribe to requestsUpdated events so Home refreshes immediately when other screens submit
+    const unsub = eventBus.on('requestsUpdated', () => {
+      loadChangeRequests();
+    });
+    return () => {
+      clearInterval(interval);
+      try { if (typeof unsub === 'function') unsub(); } catch (e) { /* ignore */ }
+    };
+  }, []);
+
+  // Refresh attendance data when screen comes into focus
+  useFocusEffect(
+    React.useCallback(() => {
+      fetchTodayAttendance();
+      loadChangeRequests();
+      
+      // Set up polling to refresh attendance every 5 seconds while on this screen
+      const pollInterval = setInterval(() => {
+        fetchTodayAttendance();
+        loadChangeRequests();
+      }, 5000);
+
+      return () => clearInterval(pollInterval);
+    }, [])
+  );
+
+  const updateTime = () => {
+    // Use device time adjusted to Asia/Manila timezone
+    const now = new Date();
+    
+    // Format time as HH:MM
+    const hours = now.getHours().toString().padStart(2, '0');
+    const minutes = now.getMinutes().toString().padStart(2, '0');
+    setCurrentTime(`${hours}:${minutes}`);
+    
+    // Format date as "Monday | July 03"
+    const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    const dayName = weekdays[now.getDay()];
+    const monthName = months[now.getMonth()];
+    const day = now.getDate().toString().padStart(2, '0');
+    setCurrentDate(`${dayName} | ${monthName} ${day}`);
+  };
+
+  // Helper function to format display time
+  const formatDisplayTime = (timeStr: string | null) => {
+    if (!timeStr) return '— : — : —';
+    
+    try {
+      // If time is in format "HH:MM:SS" or "HH:MM:SS.000000", extract just HH:MM:SS
+      const timePart = timeStr.split('.')[0]; // Remove microseconds if present
+      
+      // If it's a full datetime string, extract just the time part
+      if (timePart.includes(' ')) {
+        return timePart.split(' ')[1];
+      }
+      
+      return timePart;
+    } catch (e) {
+      console.error('Error formatting time:', e);
+      return timeStr;
+    }
+  };
+
+  const fetchTodayAttendance = async () => {
+    try {
+      const userData = await authService.getUserData();
+      if (!userData.access_token || !userData.employee_id) {
+        console.log('No user data available');
+        return;
+      }
+
+      const today = formatDate(new Date());
+      console.log('DEBUG: Fetching attendance for employee_id=', userData.employee_id, 'date=', today);
+      
+      // Fetch branch name, guard type, and shift time from AsyncStorage
+        const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+      const storedBranchName = await AsyncStorage.getItem('user_branch_name');
+      const storedBranchCode = await AsyncStorage.getItem('user_branch_code');
+      const storedClusterName = await AsyncStorage.getItem('branch_cluster_name');
+      const storedAreaName = await AsyncStorage.getItem('branch_area_name');
+      const storedGuardType = await AsyncStorage.getItem('guard_type');
+      
+      // Determine if today is weekend
+      const now = new Date();
+      const dayOfWeek = now.getDay(); // 0 = Sunday, 6 = Saturday
+      const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+      
+      // Get appropriate shift time based on day
+      let shiftInTime = null;
+      let shiftOutTime = null;
+      if (isWeekend) {
+        shiftInTime = await AsyncStorage.getItem('branch_weekend_in');
+        shiftOutTime = await AsyncStorage.getItem('branch_weekend_out');
+      } else {
+        shiftInTime = await AsyncStorage.getItem('branch_weekday_in');
+        shiftOutTime = await AsyncStorage.getItem('branch_weekday_out');
+      }
+      
+      // Format shift time display
+      if (shiftInTime && shiftOutTime) {
+        setShiftTime(`${shiftInTime} - ${shiftOutTime}`);
+      } else if (shiftInTime) {
+        setShiftTime(shiftInTime);
+      }
+      
+      setBranchName(storedBranchName || '');
+      setBranchCode(storedBranchCode || '');
+      setBranchCluster(storedClusterName || '');
+      setBranchArea(storedAreaName || '');
+      if (storedGuardType) {
+        setGuardType(storedGuardType);
+      }
+
+      // Check for approved change requests for today
+      const changeRequestResult = await attendanceService.getChangeRequests(Number(userData.employee_id), today);
+      let approvedTimeInRequest: any = null;
+      let approvedTimeOutRequest: any = null;
+      
+      console.log('DEBUG: Change request result:', JSON.stringify(changeRequestResult));
+      
+      if (changeRequestResult?.success) {
+        let apiRequests: any[] = [];
+        if (Array.isArray(changeRequestResult.data)) {
+          apiRequests = changeRequestResult.data;
+        } else if (changeRequestResult.data && Array.isArray(changeRequestResult.data.data)) {
+          apiRequests = changeRequestResult.data.data;
+        } else if (changeRequestResult.data && typeof changeRequestResult.data === 'object') {
+          apiRequests = [changeRequestResult.data];
+        }
+
+        console.log('DEBUG: Processing', apiRequests.length, 'change requests');
+
+        // Find approved time in/out change requests for today
+        for (const req of apiRequests) {
+          console.log('DEBUG: Full Request:', JSON.stringify(req));
+          if (req && typeof req === 'object') {
+            // Extract date - handle both "YYYY-MM-DD" and "YYYY-MM-DDTHH:MM:SS" formats
+            let reqDate = (req.date || '').toString();
+            if (reqDate.includes('T')) {
+              reqDate = reqDate.split('T')[0]; // ISO format: split by 'T'
+            } else if (reqDate.includes(' ')) {
+              reqDate = reqDate.split(' ')[0]; // Space format: split by space
+            }
+            
+            const reqStatus = (req.status || '').toString().toLowerCase();
+            const reqAction = (req.action || '').toString().toLowerCase();
+            
+            console.log('DEBUG: Parsed values:');
+            console.log('  - Request date:', reqDate);
+            console.log('  - Today:', today);
+            console.log('  - Date match:', reqDate === today);
+            console.log('  - Status (raw):', req.status);
+            console.log('  - Status (lower):', reqStatus);
+            console.log('  - Status is approved:', reqStatus === 'approved');
+            console.log('  - Action (raw):', req.action);
+            console.log('  - Action (lower):', reqAction);
+            console.log('  - Requested time:', req.requested_time);
+            
+            if (reqDate === today && reqStatus === 'approved') {
+              if (reqAction === 'time_in' && !approvedTimeInRequest) {
+                approvedTimeInRequest = req;
+                console.log('✓ DEBUG: Found approved TIME_IN request:', req.requested_time);
+              } else if (reqAction === 'time_out' && !approvedTimeOutRequest) {
+                approvedTimeOutRequest = req;
+                console.log('✓ DEBUG: Found approved TIME_OUT request:', req.requested_time);
+              }
+            } else {
+              console.log('✗ DEBUG: Request not matched - Date match:', reqDate === today, 'Status match:', reqStatus === 'approved');
+            }
+          }
+        }
+        
+        console.log('DEBUG: Final approved requests - TimeIn:', approvedTimeInRequest?.requested_time, 'TimeOut:', approvedTimeOutRequest?.requested_time);
+
+        // Auto-apply approved requests to DB so changes persist beyond UI override
+        const applyIfNeeded = async (approvedReq: any) => {
+          try {
+            const requestId = String(approvedReq.id || approvedReq.request_id || '');
+            if (!requestId || appliedApprovedIdsRef.current.has(requestId)) return;
+            const reqAction = (approvedReq.action || '').toString().toLowerCase();
+            if (reqAction !== 'time_in' && reqAction !== 'time_out') return;
+
+            const attendanceInfo = await attendanceService.getAttendanceForDate(today, true);
+            const branchId = attendanceInfo?.branchId || Number(userData.user_branch_id) || 0;
+            const guardType = attendanceInfo?.guardType || 'Regular';
+            const guardAttendanceId = reqAction === 'time_in' ? attendanceInfo?.timeInId : attendanceInfo?.timeOutId;
+            const requestedTime = String(approvedReq.requested_time || approvedReq.time || '').trim();
+
+            if (!requestedTime) return; // nothing to apply
+
+            const applyRes = await attendanceService.applyApprovedChangeRequest({
+              requestId,
+              employeeId: Number(userData.employee_id),
+              branchId: Number(branchId || 0),
+              date: formatDate(new Date()),
+              action: reqAction,
+              requestedTime,
+              guardAttendanceId: guardAttendanceId ? Number(guardAttendanceId) : undefined,
+              guardType,
+            });
+            console.log('Home auto-apply result =>', applyRes);
+            if (applyRes?.success) appliedApprovedIdsRef.current.add(requestId);
+          } catch (e) {
+            console.log('Home auto-apply error', e);
+          }
+        };
+        if (approvedTimeInRequest) await applyIfNeeded(approvedTimeInRequest);
+        if (approvedTimeOutRequest) await applyIfNeeded(approvedTimeOutRequest);
+      }
+
+      // Use the attendance logs API - fetch only today's data
+      const result = await authService.getTimeEntryHistory(
+        parseInt(userData.employee_id),
+        userData.access_token
+      );
+
+      console.log('DEBUG: Attendance logs API result:', JSON.stringify(result));
+
+      if (result.success && result.data && result.data.length > 0) {
+        const attendanceLogs = result.data;
+        
+        // Find time in and time out actions for today ONLY
+        let latestTimeIn = null;
+        let latestTimeOut = null;
+        
+        // Strictly filter records for today only
+        const todayLogs = attendanceLogs.filter((log: any) => {
+          const logDate = log.date || log.attendance_date;
+          // Match exact date in YYYY-MM-DD format
+          return logDate === today;
+        });
+
+        console.log('DEBUG: Total logs received:', attendanceLogs.length, 'Today only:', todayLogs.length);
+
+        // Process only today's logs to find the latest TIME_IN and TIME_OUT
+        for (const log of todayLogs) {
+          if (log.action === 'TIME_IN' || log.action === 'time_in') {
+            // Keep the latest TIME_IN by comparing times
+            if (!latestTimeIn || log.time > latestTimeIn) {
+              latestTimeIn = log.time;
+            }
+          } else if (log.action === 'TIME_OUT' || log.action === 'time_out') {
+            // Keep the latest TIME_OUT by comparing times
+            if (!latestTimeOut || log.time > latestTimeOut) {
+              latestTimeOut = log.time;
+            }
+          }
+        }
+
+        // Only update state if we have actual data
+        let formattedTimeIn = formatDisplayTime(latestTimeIn);
+        let formattedTimeOut = formatDisplayTime(latestTimeOut);
+        
+        console.log('DEBUG: Before override - TimeIn:', formattedTimeIn, 'TimeOut:', formattedTimeOut);
+        
+        // Override with approved change request time if available
+        if (approvedTimeInRequest && approvedTimeInRequest.requested_time) {
+          formattedTimeIn = formatDisplayTime(approvedTimeInRequest.requested_time);
+          setApprovedTimeInChange(approvedTimeInRequest.requested_time);
+          console.log('✓ DEBUG: Overriding TimeIn with approved request:', formattedTimeIn);
+        } else {
+          setApprovedTimeInChange(null);
+          console.log('✗ DEBUG: No approved TimeIn request to override');
+        }
+        
+        if (approvedTimeOutRequest && approvedTimeOutRequest.requested_time) {
+          formattedTimeOut = formatDisplayTime(approvedTimeOutRequest.requested_time);
+          setApprovedTimeOutChange(approvedTimeOutRequest.requested_time);
+          console.log('✓ DEBUG: Overriding TimeOut with approved request:', formattedTimeOut);
+        } else {
+          setApprovedTimeOutChange(null);
+          console.log('✗ DEBUG: No approved TimeOut request to override');
+        }
+        
+        // Check if time in is late (after shift start time)
+        // Use approved time if available, otherwise use actual time
+        const timeInToCheck = approvedTimeInRequest?.requested_time || latestTimeIn;
+        if (timeInToCheck && shiftInTime) {
+          const timeInStr = timeInToCheck.split('.')[0]; // Remove microseconds
+          setIsTimeInLate(timeInStr > shiftInTime);
+        } else {
+          setIsTimeInLate(false);
+        }
+        
+        // Check if time out is early (before shift end time)
+        // Use approved time if available, otherwise use actual time
+        const timeOutToCheck = approvedTimeOutRequest?.requested_time || latestTimeOut;
+        if (timeOutToCheck && shiftOutTime) {
+          const timeOutStr = timeOutToCheck.split('.')[0]; // Remove microseconds
+          setIsTimeOutEarly(timeOutStr < shiftOutTime);
+        } else {
+          setIsTimeOutEarly(false);
+        }
+        
+        setClockInTime(formattedTimeIn);
+        setClockOutTime(formattedTimeOut);
+
+        console.log('DEBUG: Updated times - Time In:', latestTimeIn, 'Time Out:', latestTimeOut);
+        console.log('DEBUG: Final displayed times - Time In:', formattedTimeIn, 'Time Out:', formattedTimeOut);
+      } else {
+        console.log('DEBUG: No attendance data found. Message:', result.message);
+        
+        // Even if no attendance data, check if we have approved change requests to display
+        if (approvedTimeInRequest && approvedTimeInRequest.requested_time) {
+          const formattedTimeIn = formatDisplayTime(approvedTimeInRequest.requested_time);
+          setClockInTime(formattedTimeIn);
+          setApprovedTimeInChange(approvedTimeInRequest.requested_time);
+          console.log('DEBUG: Set time in from approved request (no attendance):', formattedTimeIn);
+          
+          // Check if time in is late
+          if (shiftInTime) {
+            const timeInStr = approvedTimeInRequest.requested_time.split('.')[0];
+            setIsTimeInLate(timeInStr > shiftInTime);
+          }
+        }
+        
+        if (approvedTimeOutRequest && approvedTimeOutRequest.requested_time) {
+          const formattedTimeOut = formatDisplayTime(approvedTimeOutRequest.requested_time);
+          setClockOutTime(formattedTimeOut);
+          setApprovedTimeOutChange(approvedTimeOutRequest.requested_time);
+          console.log('DEBUG: Set time out from approved request (no attendance):', formattedTimeOut);
+          
+          // Check if time out is early
+          if (shiftOutTime) {
+            const timeOutStr = approvedTimeOutRequest.requested_time.split('.')[0];
+            setIsTimeOutEarly(timeOutStr < shiftOutTime);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('DEBUG: Error fetching attendance:', error);
+    }
+  };
+
+  const loadChangeRequests = async () => {
+    try {
+    
+      const user = await authService.getUserData();
+      const employeeId = Number(user?.employee_id || 0);
+      if (!employeeId) return;
+
+      const result = await attendanceService.getChangeRequests(employeeId);
+      let apiRequests: any[] = [];
+      if (result?.success) {
+        if (Array.isArray(result.data)) {
+          apiRequests = apiRequests.concat(result.data);
+        } else if (result.data && Array.isArray(result.data.data)) {
+          apiRequests = apiRequests.concat(result.data.data);
+        } else if (result.data && typeof result.data === 'object') {
+          apiRequests.push(result.data);
+        }
+      }
+
+      // Also fetch OT requests using authenticated endpoint and merge (some backends require auth)
+      try {
+        const otRes = await attendanceService.fetchOtRequests(employeeId);
+        if (otRes?.success) {
+          if (Array.isArray(otRes.data)) {
+            apiRequests = apiRequests.concat(otRes.data);
+          } else if (otRes.data && Array.isArray(otRes.data.data)) {
+            apiRequests = apiRequests.concat(otRes.data.data);
+          } else if (otRes.data && typeof otRes.data === 'object') {
+            apiRequests.push(otRes.data);
+          }
+        }
+      } catch (e) {
+        console.log('DEBUG: fetchOtRequests failed', e);
+      }
+
+      if (apiRequests.length > 0) {
+        // Map and normalize requests (includes OT) and sort newest-first
+        const mapped = mapRequests(apiRequests);
+
+        // Pre-resolve reviewer names from reviewed_by IDs to avoid placeholders
+        try {
+          const userData = await authService.getUserData();
+          const token = userData?.access_token || undefined;
+          const idSet = new Set<string>();
+          for (const m of mapped) {
+            const reviewerId = String(m?.reviewedBy || (m?.raw && m.raw.reviewed_by) || '')?.trim();
+            if (reviewerId && !m.reviewerName) idSet.add(reviewerId);
+          }
+          if (idSet.size > 0) {
+            const ids = Array.from(idSet);
+            const lookups = await Promise.all(ids.map(async (id) => {
+              try {
+                const res = await authService.getUserById(Number(id), token);
+                return [id, res?.name || ''] as [string, string];
+              } catch {
+                return [id, ''] as [string, string];
+              }
+            }));
+            const nameMap = new Map<string, string>(lookups);
+            for (const m of mapped) {
+              const reviewerId = String(m?.reviewedBy || (m?.raw && m.raw.reviewed_by) || '')?.trim();
+              if (reviewerId && !m.reviewerName) {
+                const nm = nameMap.get(reviewerId);
+                if (nm) m.reviewerName = nm;
+              }
+            }
+          }
+        } catch (e) {
+          // silent
+        }
+
+        const displayMapped = mapped.map((m: any) => ({ ...m, date: formatDateReadable(m.date) }));
+        setRequests(displayMapped);
+      } else {
+        // no requests found
+        setRequests([]);
+      }
+    } catch (e) {
+      console.error('Error loading requests:', e);
+    } finally {
+      setLoadingRequests(false);
+    }
+  };
+
+  // When tracking modal opens, if we only have reviewer ID, attempt to resolve name via API
+  useEffect(() => {
+    const resolveReviewerName = async () => {
+      if (!showTrackingModal || !trackingItem) return;
+      const raw = trackingItem?.raw || {};
+      const hasName = !!(
+        trackingItem?.reviewerName ||
+        raw.reviewer_name ||
+        raw.reviewed_by_name ||
+        (raw.reviewer && (raw.reviewer.name || raw.reviewer.full_name)) ||
+        (raw.reviewed_by_user && raw.reviewed_by_user.name)
+      );
+      const reviewerId = raw.reviewed_by || trackingItem?.reviewedBy || trackingItem?.reviewerId;
+      if (hasName || !reviewerId) return;
+      try {
+        const userData = await authService.getUserData();
+        console.log('DEBUG: Resolving reviewer by ID', reviewerId);
+        const res = await authService.getUserById(String(reviewerId), userData.access_token || undefined);
+        if (res?.success && res?.name) {
+          setTrackingItem((prev: any) => ({ ...(prev || {}), reviewerName: res.name }));
+          console.log('DEBUG: Resolved reviewer name', res.name);
+        }
+      } catch (e) {
+        // ignore lookup failures
+        console.log('DEBUG: Reviewer name lookup failed', e);
+      }
+    };
+    resolveReviewerName();
+  }, [showTrackingModal, trackingItem]);
+
+  const formatDateReadable = (dateStr?: string | null) => {
+    if (!dateStr) return '';
+    try {
+      const s = String(dateStr).trim();
+      const d = s.length === 10 ? new Date(s + 'T00:00:00') : new Date(s);
+      if (isNaN(d.getTime())) return s.split('T')[0] || s;
+      const month = d.toLocaleString('en-US', { month: 'short' });
+      const day = d.getDate();
+      const year = d.getFullYear();
+      return `${month} ${day}, ${year}`;
+    } catch (e) {
+      return String(dateStr);
+    }
+  };
+
+  const renderStatusBadge = (status: string) => {
+    const config: Record<string, { bg: string; color: string; icon: keyof typeof Ionicons.glyphMap }> = {
+      Pending: { bg: '#FFF3CD', color: '#856404', icon: 'time-outline' },
+      Approved: { bg: '#E8F5E9', color: '#2E7D32', icon: 'checkmark-circle-outline' },
+      Declined: { bg: '#F8D7DA', color: '#721C24', icon: 'close-circle-outline' },
+      Disapproved: { bg: '#F8D7DA', color: '#721C24', icon: 'close-circle-outline' },
+    };
+    const normalized = status === 'Disapproved' ? 'Declined' : status;
+    const style = config[normalized] || config['Pending'];
+    return (
+      <View style={[stylesRequest.statusBadge, { backgroundColor: style.bg }]}> 
+        <Ionicons name={style.icon} size={14} color={style.color} />
+        <Text style={[stylesRequest.statusText, { color: style.color }]}>{status}</Text>
+      </View>
+    );
+  };
+
+  const getRequestCardBorderColor = (status: string) => {
+    switch (status) {
+      case 'Pending': return '#F59E0B'; // Orange
+      case 'Approved': return '#10B981'; // Green
+      case 'Declined': return '#EF4444'; // Red
+      default: return '#F59E0B'; // Default to orange for pending
+    }
+  };
+   
+  const branchDisplayName = branchCode && branchName
+    ? `${branchCode} - ${branchName}`
+    : (branchName || branchCode);
+
+  return (
+    <ScrollView style={styles.screen} contentContainerStyle={{ paddingBottom: 100 }}>
+      {/* Header */}
+      <View style={styles.header}>
+        <Text style={styles.welcomeText}>
+          <Text style={styles.welcomeLabel}>Welcome, </Text>
+          <Text style={styles.userName}>{userName || 'Guest'}</Text>
+        </Text>
+        
+        <View style={styles.timeContainer}>
+          <Text style={styles.timeText}>{currentTime}</Text>
+          <Text style={styles.dateText}>{currentDate}</Text>
+          
+          <View style={styles.timeCard}>
+            {branchName ? (
+              <View style={styles.branchInfoContainer}>
+                {(branchCluster || branchArea) ? (
+                  <View style={styles.branchMetaContainer}>
+                    {branchCluster ? <Text style={styles.branchClusterText}>{branchCluster}</Text> : null}
+                    {branchArea ? (
+                      <Text style={styles.branchAreaText}>Area: {branchArea}</Text>
+                    ) : null}
+                  </View>
+                ) : null}
+                <View style={styles.branchRow}>
+                  <Image 
+                    source={require('@/assets/images/branch.png')} 
+                    style={styles.branchIcon}
+                  />
+                  <Text
+                    style={styles.branchText}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit={true}
+                    minimumFontScale={0.7}
+                    ellipsizeMode="tail"
+                  >
+                    {branchDisplayName}
+                  </Text>
+                </View>
+                {guardType ? (
+                  <View style={styles.guardTypeRow}>
+                    <Image 
+                      source={require('@/assets/images/guard_type.png')} 
+                      style={styles.guardTypeIcon}
+                    />
+                    <Text style={styles.guardTypeText}>{guardType}</Text>
+                  </View>
+                ) : null}
+                {shiftTime ? (
+                  <Text style={styles.shiftTimeText}>Shift Time ({shiftTime})</Text>
+                ) : null}
+              </View>
+            ) : null}
+            
+            <View style={styles.clockInOutContainer}>
+            <View style={styles.clockInOutItem}>
+              <Text style={styles.clockInOutLabel}>Time In</Text>
+              <Text style={[
+                clockInTime === '— : — : —' 
+                  ? styles.clockInOutValueGrey 
+                  : isTimeInLate 
+                    ? styles.clockInOutValueOrange 
+                    : styles.clockInOutValueGreen
+              ]}>
+                {clockInTime} 
+              </Text>
+            </View>
+            
+            <View style={styles.clockDivider} />
+            
+            <View style={styles.clockInOutItem}>
+              <Text style={styles.clockInOutLabel}>Time Out</Text>
+              <Text style={[
+                clockOutTime === '— : — : —' 
+                  ? styles.clockInOutValueGrey 
+                  : isTimeOutEarly 
+                    ? styles.clockInOutValueOrange 
+                    : styles.clockInOutValueGreen
+              ]}>
+                {clockOutTime}
+              </Text>
+            </View>
+          </View>
+          </View>
+        </View>
+      </View>
+
+      {/* Content */}
+      <View style={styles.content}>
+        {requests.length > 0 && (
+          <View style={stylesRequest.requestSection}>
+            <View style={stylesRequest.sectionHeader}>
+              <Ionicons name="list" size={22} color={theme.primary} />
+              <Text style={stylesRequest.sectionTitle}>Requests</Text>
+            </View>
+            {loadingRequests ? (
+              <View style={stylesRequest.loadingContainer}>
+                <ActivityIndicator size="small" color={theme.primary} />
+                <Text style={stylesRequest.loadingText}>Loading...</Text>
+              </View>
+            ) : (
+              <FlatList
+                data={requests}
+                keyExtractor={(item: any) => String(item.id)}
+                scrollEnabled={false}
+                renderItem={({ item }: { item: any }) => (
+                  <TouchableOpacity
+                    style={[stylesRequest.requestCard, { borderLeftColor: getRequestCardBorderColor(item.status) }]}
+                    activeOpacity={0.85}
+                    onPress={() => { console.log('Request pressed', item.id); setTrackingItem(item); setShowTrackingModal(true); }}
+                  >
+                    <View style={stylesRequest.requestHeader}>
+                      <View style={stylesRequest.requestTypeContainer}>
+                        <Ionicons
+                          name={item.iconName || 'list'}
+                          size={20}
+                          color={item.iconColor || theme.text}
+                        />
+                        <Text style={stylesRequest.requestType}>{item.type}</Text>
+                      </View>
+                      {renderStatusBadge(item.status)}
+                    </View>
+                    <View style={stylesRequest.requestBody}>
+                      <View style={stylesRequest.requestRow}>
+                        <Text style={stylesRequest.requestLabel}>Date:</Text>
+                        <Text style={stylesRequest.requestValue}>{item.date}</Text>
+                      </View>
+                      <View style={stylesRequest.requestRow}>
+                        <Text style={stylesRequest.requestLabel}>Requested Time:</Text>
+                        <Text style={[stylesRequest.requestValue, stylesRequest.highlightedValue]}>
+                          {item.requestedTime}
+                        </Text>
+                      </View>
+                    </View>
+                  </TouchableOpacity>
+                )}
+              />
+            )}
+          </View>
+        )}
+      </View>
+    {/* Tracking modal */}
+    <Modal visible={showTrackingModal} transparent animationType="slide" onRequestClose={() => setShowTrackingModal(false)}>
+      <View style={styles.modalBackdrop}>
+        <View style={styles.modalContent}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Request Tracking</Text>
+            <TouchableOpacity onPress={() => setShowTrackingModal(false)}>
+              <Ionicons name="close" size={20} color={theme.muted} />
+            </TouchableOpacity>
+          </View>
+          {trackingItem ? (
+            <View>
+              <View style={styles.modalSummaryCard}>
+                <Text style={styles.modalSummaryLabel}>Requested Date</Text>
+                <Text style={styles.modalSummaryValue}>{trackingItem.date || '—'}</Text>
+                <Text style={[styles.modalSummaryLabel, { marginTop: 8 }]}>Requested Time</Text>
+                <Text style={styles.modalSummaryValue}>{trackingItem.requestedTime || '—'}</Text>
+              </View>
+
+              <View>
+                <View style={styles.modalTimelineRow}>
+                  <View style={styles.modalTimelineTrack}>
+                    <View style={[styles.modalTimelineDot, { backgroundColor: theme.primary }]} />
+                    <View style={styles.modalTimelineLine} />
+                  </View>
+                  <View style={styles.modalTimelineContent}>
+                    <Text style={styles.modalTimelineTitle}>Requested</Text>
+                    <Text style={styles.modalTimelineSubtitle}>{trackingItem.reason || 'No reason provided'}</Text>
+                  </View>
+                </View>
+
+                {trackingItem.status ? (
+                  <View style={styles.modalTimelineRow}>
+                    <View style={styles.modalTimelineTrack}>
+                      <View
+                        style={[
+                          styles.modalTimelineDot,
+                          { backgroundColor: trackingItem.status === 'Approved' ? theme.success : theme.danger },
+                        ]}
+                      />
+                    </View>
+                    <View style={styles.modalTimelineContent}>
+                      <Text style={styles.modalTimelineTitle}>{trackingItem.status}</Text>
+                      <View style={styles.modalApproverRow}>
+                        <Ionicons name="person-circle" size={28} color={theme.secondaryText} />
+                        <View style={styles.modalApproverDetails}>
+                          <Text style={styles.modalApproverName}>{getReviewerDisplayName(trackingItem)}</Text>
+                        </View>
+                      </View>
+                      {/* Reviewer Notes follow below */}
+                      {(trackingItem.reviewerNotes || (trackingItem.raw && (trackingItem.raw.reviewer_notes || trackingItem.raw.reviewerNotes))) ? (
+                        <>
+                          <Text style={styles.modalTimelineTitle}>Reviewer Notes</Text>
+                          <Text style={styles.modalTimelineSubtitle}>
+                            {trackingItem.reviewerNotes || (trackingItem.raw && (trackingItem.raw.reviewer_notes || trackingItem.raw.reviewerNotes))}
+                          </Text>
+                        </>
+                      ) : null}
+                    </View>
+                  </View>
+                ) : null}
+              </View>
+            </View>
+          ) : null}
+        </View>
+      </View>
+    </Modal>
+    </ScrollView>
+  );
+}
+
+const createStyles = (theme: ThemeShape) =>
+  StyleSheet.create({
+    screen: { flex: 1, backgroundColor: theme.background },
+    header: {
+      paddingTop: 60,
+      paddingHorizontal: 20,
+      paddingBottom: 20,
+      backgroundColor: theme.background,
+      alignItems: 'center',
+    },
+    welcomeText: {
+      fontSize: 20,
+      marginBottom: 6,
+      fontFamily: 'Poppins',
+      color: theme.secondaryText,
+    },
+    welcomeLabel: {
+      color: theme.primary,
+      fontWeight: '700',
+      fontFamily: 'Poppins',
+    },
+    userName: {
+      color: theme.text,
+      fontWeight: '700',
+      fontFamily: 'Poppins',
+    },
+    timeContainer: {
+      marginTop: 25,
+      alignItems: 'center',
+    },
+    timeText: {
+      fontSize: 40,
+      fontWeight: '600',
+      color: theme.text,
+      fontFamily: 'Poppins',
+      marginBottom: 4,
+    },
+    dateText: {
+      fontSize: 14,
+      color: theme.muted,
+      fontFamily: 'Poppins',
+      fontWeight: '600',
+      marginBottom: 20,
+    },
+    timeCard: {
+      borderWidth: 1.5,
+      borderColor: theme.primary,
+      borderRadius: 16,
+      padding: 20,
+      backgroundColor: theme.card,
+      width: '100%',
+      maxWidth: 340,
+      shadowColor: theme.cardShadow,
+      shadowOpacity: theme.scheme === 'dark' ? 0.45 : 0.1,
+      shadowRadius: 12,
+      shadowOffset: { width: 0, height: 6 },
+      elevation: theme.scheme === 'dark' ? 10 : 5,
+    },
+    branchInfoContainer: {
+      alignItems: 'center',
+      marginBottom: 16,
+    },
+    branchMetaContainer: {
+      alignItems: 'center',
+      marginBottom: 6,
+    },
+    branchClusterText: {
+      fontSize: 15,
+      color: theme.text,
+      fontFamily: 'Poppins',
+      fontWeight: '700',
+    },
+    branchAreaText: {
+      fontSize: 13,
+      color: theme.muted,
+      fontFamily: 'Poppins',
+      fontWeight: '600',
+      marginTop: 2,
+    },
+    branchRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginBottom: 4,
+    },
+    branchIcon: {
+      width: 18,
+      height: 18,
+      marginRight: 6,
+      tintColor: theme.primary,
+    },
+    branchText: {
+      fontSize: 16,
+      color: theme.text,
+      fontFamily: 'Poppins',
+      fontWeight: '700',
+      marginBottom: 4,
+      textAlign: 'center',
+      flexShrink: 1,
+      // allow long branch names to wrap and not push layout off-center
+      includeFontPadding: false,
+    },
+    guardTypeRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      marginBottom: 4,
+    },
+    guardTypeIcon: {
+      width: 17,
+      height: 17,
+      marginRight: 6,
+      tintColor: theme.accent,
+    },
+    guardTypeText: {
+      fontSize: 15,
+      color: theme.secondaryText,
+      fontFamily: 'Poppins',
+      fontWeight: '600',
+      marginBottom: 4,
+    },
+    shiftTimeText: {
+      fontSize: 12,
+      color: theme.muted,
+      fontFamily: 'Poppins',
+      fontWeight: '600',
+    },
+    clockInOutContainer: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    clockInOutItem: {
+      alignItems: 'center',
+      paddingHorizontal: 20,
+    },
+    clockInOutLabel: {
+      fontSize: 14,
+      color: theme.muted,
+      fontFamily: 'Poppins',
+      fontWeight: '500',
+      marginBottom: 8,
+    },
+    clockInOutValueGreen: {
+      fontSize: 25,
+      color: theme.success,
+      fontFamily: 'Poppins',
+      fontWeight: '700',
+      letterSpacing: 1,
+    },
+    clockInOutValueGrey: {
+      fontSize: 20,
+      color: theme.muted,
+      fontFamily: 'Poppins',
+      fontWeight: '700',
+      letterSpacing: 1.5,
+    },
+    clockInOutValueOrange: {
+      fontSize: 25,
+      color: theme.warning,
+      fontFamily: 'Poppins',
+      fontWeight: '700',
+      letterSpacing: 1,
+    },
+    clockInOutValueRed: {
+      fontSize: 25,
+      color: theme.danger,
+      fontFamily: 'Poppins',
+      fontWeight: '700',
+      letterSpacing: 1,
+    },
+    clockDivider: {
+      width: 1,
+      height: 50,
+      backgroundColor: theme.border,
+    },
+    content: { padding: 20, flex: 1 },
+    sectionTitle: {
+      fontSize: 18,
+      fontWeight: '700',
+      color: theme.text,
+      marginBottom: 16,
+      letterSpacing: 0.2,
+      fontFamily: 'Poppins',
+    },
+    card: {
+      backgroundColor: theme.card,
+      borderRadius: 16,
+      shadowColor: theme.cardShadow,
+      shadowOpacity: theme.scheme === 'dark' ? 0.45 : 0.1,
+      shadowRadius: 16,
+      shadowOffset: { width: 0, height: 6 },
+      elevation: theme.scheme === 'dark' ? 10 : 6,
+      overflow: 'hidden',
+    },
+    cardHeader: {
+      padding: 20,
+      backgroundColor: theme.card,
+    },
+    cardRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
+    calendarIconContainer: {
+      width: 32,
+      height: 32,
+      borderRadius: 8,
+      backgroundColor: theme.scheme === 'dark' ? 'rgba(79, 155, 255, 0.25)' : theme.ripple,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginRight: 12,
+    },
+    calendarIcon: { fontSize: 16, color: theme.primary },
+    cardDateText: {
+      fontSize: 16,
+      fontWeight: '700',
+      color: theme.text,
+      flex: 1,
+      letterSpacing: 0.2,
+      fontFamily: 'Poppins',
+    },
+    shiftText: {
+      fontSize: 13,
+      color: theme.muted,
+      fontWeight: '500',
+      marginLeft: 44,
+      fontFamily: 'Poppins',
+    },
+    divider: {
+      height: 1,
+      backgroundColor: theme.border,
+      marginHorizontal: 20,
+    },
+    clockSection: {
+      padding: 20,
+    },
+    clockRow: { flexDirection: 'row', alignItems: 'center' },
+    clockItem: {
+      flex: 1,
+      alignItems: 'center',
+    },
+    clockLabel: {
+      fontSize: 12,
+      color: theme.muted,
+      fontWeight: '600',
+      marginBottom: 12,
+      textTransform: 'uppercase',
+      letterSpacing: 0.5,
+      fontFamily: 'Poppins',
+    },
+    clockValueGreen: {
+      fontSize: 20,
+      letterSpacing: 1.5,
+      color: theme.success,
+      fontWeight: '800',
+      fontVariant: ['tabular-nums'],
+      fontFamily: 'Poppins',
+    },
+    clockValueGrey: {
+      fontSize: 20,
+      letterSpacing: 1.5,
+      color: theme.muted,
+      fontWeight: '800',
+      fontVariant: ['tabular-nums'],
+      fontFamily: 'Poppins',
+    },
+    separator: {
+      width: 1,
+      height: 60,
+      backgroundColor: theme.border,
+      marginHorizontal: 20,
+    },
+    statusIndicator: {
+      width: 8,
+      height: 8,
+      borderRadius: 4,
+      backgroundColor: theme.success,
+      marginTop: 8,
+    },
+    modalBackdrop: {
+      flex: 1,
+      backgroundColor: theme.overlay,
+      justifyContent: 'flex-end',
+    },
+    modalContent: {
+      backgroundColor: theme.card,
+      padding: 16,
+      borderTopLeftRadius: 12,
+      borderTopRightRadius: 12,
+      maxHeight: '75%',
+      shadowColor: theme.cardShadow,
+      shadowOpacity: theme.scheme === 'dark' ? 0.45 : 0.2,
+      shadowRadius: 16,
+      shadowOffset: { width: 0, height: -4 },
+      elevation: theme.scheme === 'dark' ? 20 : 10,
+    },
+    modalHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: 8,
+    },
+    modalTitle: {
+      fontSize: 18,
+      fontWeight: '700',
+      color: theme.text,
+    },
+    modalSummaryCard: {
+      backgroundColor: theme.surface,
+      padding: 10,
+      borderRadius: 10,
+      marginBottom: 10,
+    },
+    modalSummaryLabel: {
+      fontSize: 12,
+      color: theme.muted,
+      fontWeight: '600',
+    },
+    modalSummaryValue: {
+      fontSize: 14,
+      color: theme.text,
+      fontWeight: '700',
+      marginTop: 4,
+    },
+    modalTimelineRow: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      marginBottom: 12,
+    },
+    modalTimelineTrack: {
+      width: 36,
+      alignItems: 'center',
+    },
+    modalTimelineDot: {
+      width: 12,
+      height: 12,
+      borderRadius: 8,
+      marginTop: 6,
+    },
+    modalTimelineLine: {
+      width: 2,
+      flex: 1,
+      backgroundColor: theme.border,
+      marginTop: 6,
+    },
+    modalTimelineContent: {
+      flex: 1,
+      paddingLeft: 8,
+    },
+    modalTimelineTitle: {
+      fontWeight: '700',
+      color: theme.text,
+    },
+    modalTimelineSubtitle: {
+      color: theme.muted,
+      marginTop: 4,
+    },
+    modalApproverRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      marginTop: 6,
+    },
+    modalApproverDetails: {
+      marginLeft: 8,
+    },
+    modalApproverName: {
+      fontWeight: '700',
+      color: theme.text,
+    },
+    modalApproverMeta: {
+      color: theme.muted,
+      marginTop: 4,
+      fontSize: 12,
+    },
+  });
+
+const createRequestStyles = (theme: ThemeShape) =>
+  StyleSheet.create({
+    requestSection: {
+      marginTop: -15,
+    },
+    sectionHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      marginBottom: 10,
+    },
+    sectionTitle: {
+      fontSize: 20,
+      fontWeight: '700',
+      color: theme.text,
+      marginLeft: 10,
+      fontFamily: 'Poppins',
+    },
+    loadingContainer: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 20,
+    },
+    loadingText: {
+      marginLeft: 10,
+      fontSize: 14,
+      color: theme.muted,
+      fontFamily: 'Poppins',
+    },
+    requestCard: {
+      backgroundColor: theme.card,
+      borderRadius: 10,
+      padding: 10,
+      marginBottom: 12,
+      borderLeftWidth: 10,
+      borderLeftColor: theme.primary,
+      shadowColor: theme.cardShadow,
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: theme.scheme === 'dark' ? 0.4 : 0.1,
+      shadowRadius: 6,
+      elevation: theme.scheme === 'dark' ? 6 : 2,
+    },
+    requestHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginBottom: 5,
+    },
+    requestTypeContainer: {
+      flexDirection: 'row',
+      alignItems: 'center',
+    },
+    requestType: {
+      fontSize: 14,
+      fontWeight: '700',
+      color: theme.text,
+      marginLeft: 8,
+      fontFamily: 'Poppins',
+    },
+    statusBadge: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+      borderRadius: 20,
+      gap: 4,
+    },
+    statusText: {
+      fontSize: 12,
+      fontWeight: '700',
+      fontFamily: 'Poppins',
+    },
+    requestBody: {
+      gap: 7,
+    },
+    requestRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+    },
+    requestLabel: {
+      fontSize: 12,
+      color: theme.muted,
+      fontWeight: '600',
+      fontFamily: 'Poppins',
+    },
+    requestValue: {
+      fontSize: 12,
+      color: theme.text,
+      fontWeight: '700',
+      fontFamily: 'Poppins',
+    },
+    highlightedValue: {
+      color: theme.secondaryText,
+      fontSize: 13,
+      fontWeight: '700',
+    },
+    requestReason: {
+      fontSize: 13,
+      color: theme.secondaryText,
+      lineHeight: 20,
+      marginTop: 4,
+      fontFamily: 'Poppins',
+    },
+  });

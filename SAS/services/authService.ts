@@ -192,56 +192,237 @@ class AuthService {
     data?: any[];
     message?: string;
   }> {
-    // Use the correct attendance-logs endpoint with specific fields
-    let urlString = `${BASE_URL}/api/attendance-logs/employee?employee_id=${employeeId}&fields=date,time,action,branch_name,branch_id,branch,guard_type,province_name,lgu_name,site_name,shift_in,shift_out`;
+    const headers = {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    };
 
-    if (startDate) urlString += `&start_date=${startDate}`;
-    if (endDate) urlString += `&end_date=${endDate}`;
-
-    console.log('DEBUG: Attendance Logs API URL:', urlString);
-
-    try {
-      const response = await fetch(urlString, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-      });
-
-      console.log('DEBUG: Attendance Logs API Status:', response.status);
-
-      // Read raw text first to avoid JSON parse errors when server returns HTML or plain text
-      const rawText = await response.text();
-      let parsed: any = null;
+    const parseJsonSafe = (text: string): any => {
       try {
-        parsed = rawText ? JSON.parse(rawText) : null;
-      } catch (parseErr) {
-        parsed = null;
+        return text ? JSON.parse(text) : null;
+      } catch {
+        return null;
+      }
+    };
+
+    const extractRows = (payload: any, depth: number = 0): any[] => {
+      if (depth > 6 || payload == null) return [];
+      if (Array.isArray(payload)) return payload;
+      if (typeof payload !== 'object') return [];
+
+      const candidates = [
+        payload.data,
+        payload.records,
+        payload.result,
+        payload.results,
+        payload.list,
+        payload.items,
+        payload.rows,
+      ];
+
+      for (const candidate of candidates) {
+        if (Array.isArray(candidate)) return candidate;
       }
 
-      if (response.status === 200) {
-        const data = parsed || [];
-        console.log('DEBUG: Attendance Logs API Response (parsed):', JSON.stringify(data));
-        return {
-          success: true,
-          data: (parsed && (parsed.data || parsed)) || [],
-        };
-      } else {
-        const message = (parsed && (parsed.message || parsed.error)) || rawText || `Status ${response.status}`;
-        console.error('DEBUG: Attendance Logs API non-OK response:', { status: response.status, body: rawText });
-        return {
-          success: false,
-          message: message,
-        };
+      for (const candidate of candidates) {
+        if (candidate && typeof candidate === 'object') {
+          const nested = extractRows(candidate, depth + 1);
+          if (nested.length > 0) return nested;
+        }
       }
-    } catch (e: any) {
-      return {
-        success: false,
-        message: `An error occurred while fetching time entry history: ${e.message || e}`,
-      };
+
+      if (
+        payload.id != null &&
+        (payload.date || payload.attendance_date || payload.time || payload.time_in || payload.time_out || payload.out_time)
+      ) {
+        return [payload];
+      }
+
+      return [];
+    };
+
+    const normalizeDateOnly = (value: any): string => {
+      const raw = String(value || '').trim();
+      if (!raw) return '';
+      if (raw.includes('T')) return raw.split('T')[0];
+      if (raw.includes(' ')) return raw.split(' ')[0];
+      const dateMatch = raw.match(/\d{4}-\d{2}-\d{2}/);
+      if (dateMatch) return dateMatch[0];
+      return raw.length >= 10 ? raw.substring(0, 10) : raw;
+    };
+
+    const normalizeAction = (value: any): string =>
+      String(value || '').trim().toLowerCase().replace(/\s+/g, '_').replace(/-/g, '_');
+
+    const normalizeTime = (value: any): string => {
+      const raw = String(value || '').trim();
+      if (!raw) return '';
+      if (raw.includes('T')) {
+        const t = raw.split('T')[1] || '';
+        return t.split('.')[0];
+      }
+      if (raw.includes(' ')) {
+        const t = raw.split(' ')[1] || raw;
+        return t.split('.')[0];
+      }
+      return raw.split('.')[0];
+    };
+
+    const withinRange = (dateOnly: string): boolean => {
+      if (!dateOnly) return false;
+      if (startDate && dateOnly < startDate) return false;
+      if (endDate && dateOnly > endDate) return false;
+      return true;
+    };
+
+    const normalizeHistoryRows = (rows: any[]): any[] => {
+      return rows
+        .flatMap((row: any) => {
+          const action = normalizeAction(row.action);
+          const inferredAction = action.includes('out') ? 'time_out' : action.includes('in') ? 'time_in' : '';
+          const dateOnly =
+            normalizeDateOnly(
+              row.date ||
+                row.attendance_date ||
+                row.created_at ||
+                row.timestamp ||
+                row.time ||
+                row.time_in ||
+                row.time_out ||
+                row.out_time
+            ) ||
+            startDate ||
+            endDate ||
+            '';
+
+          const rawTime =
+            row.time ||
+            row.time_in ||
+            row.time_out ||
+            row.out_time ||
+            row.attendance_time ||
+            row.timestamp ||
+            row.created_at ||
+            '';
+          const time = normalizeTime(rawTime);
+          const base = {
+            id: row.id ?? row.guard_attendance_id ?? undefined,
+            date: dateOnly,
+            attendance_date: dateOnly,
+            site_name:
+              row.site_name ||
+              row.branch_name ||
+              row.site?.site_name ||
+              row.branch?.branch_name ||
+              undefined,
+            site_id: row.site_id || row.branch_id || row.site?.id || row.branch?.id || undefined,
+            site: row.site || row.branch || undefined,
+            raw: row,
+          };
+
+          // If action is missing but both time_in and time_out exist, split into two records.
+          if (!inferredAction && row.time_in && row.time_out) {
+            return [
+              {
+                ...base,
+                time: normalizeTime(row.time_in),
+                action: 'time_in',
+              },
+              {
+                ...base,
+                time: normalizeTime(row.time_out),
+                action: 'time_out',
+              },
+            ];
+          }
+
+          return [
+            {
+              ...base,
+              time,
+              action: inferredAction || (row.time_out ? 'time_out' : 'time_in'),
+            },
+          ];
+        })
+        .filter((item: any) => withinRange(item.date));
+    };
+
+    // Primary source: mp-guards-attendance (fixed API endpoint)
+    const fallbackUrls: string[] = [];
+    fallbackUrls.push(`${BASE_URL}/api/mp-guards-attendance?employee_id=${employeeId}`);
+    if (startDate && endDate) {
+      fallbackUrls.push(
+        `${BASE_URL}/api/mp-guards-attendance?employee_id=${employeeId}&start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}`
+      );
     }
+
+    for (const url of fallbackUrls) {
+      try {
+        console.log('[HISTORY] Attempting mp-guard-attendance fetch:', url);
+        const response = await fetch(url, { method: 'GET', headers });
+        const rawText = await response.text();
+        console.log('[HISTORY] mp-guard-attendance raw response:', rawText.substring(0, 500));
+        const parsed = parseJsonSafe(rawText);
+        console.log('[HISTORY] Parsed JSON:', JSON.stringify(parsed, null, 2).substring(0, 500));
+        const rows = extractRows(parsed);
+        console.log('[HISTORY] Extracted rows count:', rows.length);
+        if (rows.length > 0) {
+          console.log('[HISTORY] First extracted row:', JSON.stringify(rows[0], null, 2));
+        }
+        const normalizedRows = normalizeHistoryRows(rows);
+        console.log('[HISTORY] Normalized rows count:', normalizedRows.length);
+        if (normalizedRows.length > 0) {
+          console.log('[HISTORY] First normalized row:', JSON.stringify(normalizedRows[0], null, 2));
+        }
+        if (response.ok && normalizedRows.length > 0) {
+          console.log('[HISTORY] ✅ Successfully fetched mp-guard-attendance history');
+          return { success: true, data: normalizedRows };
+        }
+        console.log('[HISTORY] mp-guard-attendance returned', response.status, 'with', normalizedRows.length, 'usable rows');
+      } catch (e) {
+        console.warn('[HISTORY] Primary mp history fetch failed for URL:', url, e);
+      }
+    }
+
+    // Secondary source: attendance logs endpoint
+    try {
+      let urlString = `${BASE_URL}/api/attendance-logs/employee?employee_id=${employeeId}&fields=date,attendance_date,time,time_in,time_out,out_time,action,branch_name,branch_id,branch,person_name,company_name,site_name,shift_in,shift_out`;
+      if (startDate) urlString += `&start_date=${startDate}`;
+      if (endDate) urlString += `&end_date=${endDate}`;
+
+      console.log('[HISTORY] Attempting attendance-logs fetch:', urlString);
+      const response = await fetch(urlString, { method: 'GET', headers });
+      const rawText = await response.text();
+      console.log('[HISTORY] attendance-logs raw response:', rawText.substring(0, 500));
+      const parsed = parseJsonSafe(rawText);
+      console.log('[HISTORY] Parsed from attendance-logs:', JSON.stringify(parsed, null, 2).substring(0, 500));
+      const rows = extractRows(parsed);
+      console.log('[HISTORY] Extracted rows from attendance-logs:', rows.length);
+      if (rows.length > 0) {
+        console.log('[HISTORY] First extracted row:', JSON.stringify(rows[0], null, 2));
+      }
+      const normalizedRows = normalizeHistoryRows(rows);
+      console.log('[HISTORY] Normalized rows from attendance-logs:', normalizedRows.length);
+      if (normalizedRows.length > 0) {
+        console.log('[HISTORY] First normalized row:', JSON.stringify(normalizedRows[0], null, 2));
+      }
+
+      if (response.ok && normalizedRows.length > 0) {
+        console.log('[HISTORY] ✅ Successfully fetched attendance-logs history');
+        return { success: true, data: normalizedRows };
+      }
+      console.log('[HISTORY] attendance-logs returned', response.status, 'with', normalizedRows.length, 'usable rows');
+    } catch (e) {
+      console.warn('[HISTORY] Secondary attendance logs fetch failed.', e);
+    }
+
+    console.log('[HISTORY] ❌ Both history endpoints failed or returned empty');
+    return {
+      success: true,
+      data: [],
+      message: 'No attendance logs found for the selected period.',
+    };
   }
 
   /**

@@ -1,8 +1,10 @@
 import authService from '@/services/authService';
 import branchService from '@/services/branchService';
+import siteService from '@/services/siteService';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import React, { useEffect, useState } from 'react';
 import { ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Calendar } from 'react-native-calendars';
@@ -28,6 +30,10 @@ function formatDisplayHMS(timeStr?: string | null) {
   }
 }
 
+function normalizeAction(value: any): string {
+  return String(value || '').trim().toLowerCase().replace(/\s+/g, '_').replace(/-/g, '_');
+}
+
 export default function TimeEntryHistoryScreen() {
   const router = useRouter();
   const today = formatDateISO(new Date());
@@ -37,8 +43,14 @@ export default function TimeEntryHistoryScreen() {
   const [latestOut, setLatestOut] = useState<string | null>(null);
   const [shiftInTime, setShiftInTime] = useState<string | null>(null);
   const [shiftOutTime, setShiftOutTime] = useState<string | null>(null);
-  const [selectedDateBranch, setSelectedDateBranch] = useState<string>('N/A');
-  const [selectedDateGuardType, setSelectedDateGuardType] = useState<string>('N/A');
+  const [selectedDateSite, setSelectedDateSite] = useState<string>('N/A');
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      setRefreshTick((prev) => prev + 1);
+    }, [])
+  );
 
   useEffect(() => {
     // Load branch shift times from storage
@@ -80,11 +92,11 @@ export default function TimeEntryHistoryScreen() {
           for (const log of res.data) {
             const date = (log.date || log.attendance_date || '').toString();
             const dateOnly = date.includes('T') ? date.split('T')[0] : (date.includes(' ') ? date.split(' ')[0] : date);
-            const action = (log.action || '').toString().toLowerCase();
+            const action = normalizeAction(log.action);
             const time = log.time || log.time_out || log.out_time || '';
             if (!byDate[dateOnly]) byDate[dateOnly] = {};
-            if (action.includes('in')) byDate[dateOnly].in = String(time);
-            else if (action.includes('out')) byDate[dateOnly].out = String(time);
+            if (action === 'time_in' || action === 'in' || action === 'clock_in') byDate[dateOnly].in = String(time);
+            else if (action === 'time_out' || action === 'out' || action === 'clock_out') byDate[dateOnly].out = String(time);
           }
           const AsyncStorage = require('@react-native-async-storage/async-storage').default;
           const weekdayIn = await AsyncStorage.getItem('branch_weekday_in');
@@ -116,7 +128,7 @@ export default function TimeEntryHistoryScreen() {
       }
     };
     fetchMonth();
-  }, [selectedDate, shiftInTime]);
+  }, [selectedDate, shiftInTime, refreshTick]);
 
   useEffect(() => {
     // Fetch latest in/out for selected date for detail section
@@ -131,9 +143,8 @@ export default function TimeEntryHistoryScreen() {
         const res = await authService.getTimeEntryHistory(Number(user.employee_id), token, dateStr, dateStr);
         let latestIn: string | null = null;
         let latestOut: string | null = null;
-        let branch: string = 'N/A';
-        let guardTypeValue: string = 'N/A';
-        let branchIdToFetch: number | null = null;
+        let site: string = 'N/A';
+        let siteIdToFetch: number | null = null;
         
         console.log('DEBUG TIME ENTRY HISTORY: Full response:', JSON.stringify(res, null, 2));
         
@@ -145,55 +156,61 @@ export default function TimeEntryHistoryScreen() {
             const dateOnly = date.includes('T') ? date.split('T')[0] : (date.includes(' ') ? date.split(' ')[0] : date);
             console.log('DEBUG TIME ENTRY HISTORY: Comparing dateOnly:', dateOnly, 'with dateStr:', dateStr);
             if (dateOnly !== dateStr) continue;
-            const action = (log.action || '').toString().toLowerCase();
+            const action = normalizeAction(log.action);
             const time = log.time || log.time_out || log.out_time || '';
             
-            // Extract branch - try branch_name first, then branch_id for separate fetch
-            console.log('DEBUG TIME ENTRY HISTORY: Checking branch_name:', log.branch_name, 'branch_id:', log.branch_id, 'branch object:', log.branch);
-            if (log.branch_name) {
-              branch = String(log.branch_name);
+            // Extract site - support site and legacy branch fields
+            console.log('DEBUG TIME ENTRY HISTORY: Checking site/branch names:', log.site_name, log.branch_name, 'site_id:', log.site_id, 'branch_id:', log.branch_id);
+            if (log.site_name) {
+              site = String(log.site_name);
+            } else if (log.branch_name) {
+              site = String(log.branch_name);
+            } else if (log.site?.site_name) {
+              site = String(log.site.site_name);
             } else if (log.branch?.branch_name) {
-              branch = String(log.branch.branch_name);
-            } else if (log.branch_id) {
-              branchIdToFetch = Number(log.branch_id);
-              console.log('DEBUG TIME ENTRY HISTORY: Will fetch branch name for ID:', branchIdToFetch);
+              site = String(log.branch.branch_name);
+            } else if (log.site_id || log.branch_id) {
+              siteIdToFetch = Number(log.site_id || log.branch_id);
+              console.log('DEBUG TIME ENTRY HISTORY: Will fetch site name for ID:', siteIdToFetch);
             }
             
-            console.log('DEBUG TIME ENTRY HISTORY: Checking guard_type:', log.guard_type);
-            if (log.guard_type) guardTypeValue = String(log.guard_type);
             
-            if (action.includes('in')) latestIn = String(time);
-            else if (action.includes('out')) latestOut = String(time);
+            if (action === 'time_in' || action === 'in' || action === 'clock_in') latestIn = String(time);
+            else if (action === 'time_out' || action === 'out' || action === 'clock_out') latestOut = String(time);
           }
         }
         
-        // If we have a branch_id but no branch_name, fetch it from the API
-        if (branchIdToFetch && branch === 'N/A') {
+        // If we have a site_id but no site_name, fetch it from the API
+        if (siteIdToFetch && site === 'N/A') {
           try {
-            console.log('DEBUG TIME ENTRY HISTORY: Fetching branch details for ID:', branchIdToFetch);
-            const branchDetails = await branchService.getBranchById(branchIdToFetch);
-            if (branchDetails?.branch_name) {
-              branch = branchDetails.branch_name;
-              console.log('DEBUG TIME ENTRY HISTORY: Fetched branch name:', branch);
+            console.log('DEBUG TIME ENTRY HISTORY: Fetching site details for ID:', siteIdToFetch);
+            const siteDetails = await siteService.getById(siteIdToFetch);
+            if (siteDetails?.name) {
+              site = siteDetails.name;
+              console.log('DEBUG TIME ENTRY HISTORY: Fetched site name:', site);
+            } else {
+              const branchDetails = await branchService.getBranchById(siteIdToFetch);
+              if (branchDetails?.branch_name) {
+                site = branchDetails.branch_name;
+                console.log('DEBUG TIME ENTRY HISTORY: Fetched legacy branch name as site:', site);
+              }
             }
           } catch (err) {
-            console.log('DEBUG TIME ENTRY HISTORY: Error fetching branch details:', err);
+            console.log('DEBUG TIME ENTRY HISTORY: Error fetching site details:', err);
           }
         }
         
-        console.log('DEBUG TIME ENTRY HISTORY: Final values - branch:', branch, 'guardType:', guardTypeValue);
+        console.log('DEBUG TIME ENTRY HISTORY: Final values - site:', site);
         setLatestIn(latestIn);
         setLatestOut(latestOut);
-        setSelectedDateBranch(branch);
-        setSelectedDateGuardType(guardTypeValue);
+        setSelectedDateSite(site);
       } catch (e) {
         console.log('History day fetch error', e);
-        setSelectedDateBranch('Error Loading');
-        setSelectedDateGuardType('Error Loading');
+        setSelectedDateSite('Error Loading');
       }
     };
     fetchDay();
-  }, [selectedDate]);
+  }, [selectedDate, refreshTick]);
 
   return (
     <View style={styles.container}>
@@ -236,17 +253,8 @@ export default function TimeEntryHistoryScreen() {
             <View style={styles.infoItem}>
               <Ionicons name="business" size={20} color="#F6B91E" />
               <View style={{ marginLeft: 12, flex: 1 }}>
-                <Text style={styles.infoLabel}>Branch</Text>
-                <Text style={styles.infoValue}>{selectedDateBranch}</Text>
-              </View>
-            </View>
-          </View>
-          <View style={[styles.infoRow, { marginTop: 8 }]}>
-            <View style={styles.infoItem}>
-              <Ionicons name="shield-checkmark" size={20} color="#F6B91E" />
-              <View style={{ marginLeft: 12, flex: 1 }}>
-                <Text style={styles.infoLabel}>Guard Type</Text>
-                <Text style={styles.infoValue}>{selectedDateGuardType}</Text>
+                <Text style={styles.infoLabel}>Site</Text>
+                <Text style={styles.infoValue}>{selectedDateSite}</Text>
               </View>
             </View>
           </View>

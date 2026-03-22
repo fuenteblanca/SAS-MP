@@ -1,4 +1,4 @@
-import { useUser } from '@/hooks/use-auth';
+﻿import { useUser } from '@/hooks/use-auth';
 import { useThemeColors } from '@/hooks/use-theme';
 import attendanceService from '@/services/attendanceService';
 import authService from '@/services/authService';
@@ -28,13 +28,12 @@ export default function HomeScreen() {
   const stylesRequest = useMemo(() => createRequestStyles(theme), [theme]);
   const [currentTime, setCurrentTime] = useState('');
   const [currentDate, setCurrentDate] = useState('');
-  const [clockInTime, setClockInTime] = useState('— : — : —');
-  const [clockOutTime, setClockOutTime] = useState('— : — : —');
+  const [clockInTime, setClockInTime] = useState('-- : -- : --');
+  const [clockOutTime, setClockOutTime] = useState('-- : -- : --');
   const [siteName, setSiteName] = useState('');
   const [siteCode, setSiteCode] = useState('');
   const [shiftIn, setShiftIn] = useState('');
   const [shiftOut, setShiftOut] = useState('');
-  const [guardType, setGuardType] = useState('');
   const [provinceName, setProvinceName] = useState('');
   const [lguName, setLguName] = useState('');
   const [requests, setRequests] = useState<any[]>([]);
@@ -66,13 +65,18 @@ export default function HomeScreen() {
     fetchTodayAttendance();
     loadChangeRequests();
     loadSiteInfo();
-    // Subscribe to requestsUpdated events so Home refreshes immediately when other screens submit
-    const unsub = eventBus.on('requestsUpdated', () => {
+    // Subscribe to request/attendance events so Home refreshes immediately.
+    const unsubRequests = eventBus.on('requestsUpdated', () => {
       loadChangeRequests();
+    });
+    const unsubAttendance = eventBus.on('attendanceUpdated', () => {
+      loadSiteInfo();
+      fetchTodayAttendance();
     });
     return () => {
       clearInterval(interval);
-      try { if (typeof unsub === 'function') unsub(); } catch (e) { /* ignore */ }
+      try { if (typeof unsubRequests === 'function') unsubRequests(); } catch (e) { /* ignore */ }
+      try { if (typeof unsubAttendance === 'function') unsubAttendance(); } catch (e) { /* ignore */ }
     };
   }, []);
 
@@ -85,6 +89,7 @@ export default function HomeScreen() {
 
       // Set up polling to refresh attendance every 5 seconds while on this screen
       const pollInterval = setInterval(() => {
+        loadSiteInfo();
         fetchTodayAttendance();
         loadChangeRequests();
       }, 5000);
@@ -113,7 +118,7 @@ export default function HomeScreen() {
 
   // Helper function to format display time
   const formatDisplayTime = (timeStr: string | null) => {
-    if (!timeStr) return '— : — : —';
+    if (!timeStr) return '-- : -- : --';
     
     try {
       const cleaned = String(timeStr).trim();
@@ -188,12 +193,11 @@ export default function HomeScreen() {
   const loadSiteInfo = async () => {
     try {
       const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-      const [name, code, sIn, sOut, gType, provName, lgu] = await Promise.all([
+      const [name, code, sIn, sOut, provName, lgu] = await Promise.all([
         AsyncStorage.getItem('current_site_name'),
         AsyncStorage.getItem('current_site_code'),
         AsyncStorage.getItem('current_site_shift_in'),
         AsyncStorage.getItem('current_site_shift_out'),
-        AsyncStorage.getItem('guard_type'),
         AsyncStorage.getItem('current_site_province_name'),
         AsyncStorage.getItem('current_site_lgu_name'),
       ]);
@@ -201,7 +205,6 @@ export default function HomeScreen() {
       if (code) setSiteCode(code);
       if (sIn) setShiftIn(sIn);
       if (sOut) setShiftOut(sOut);
-      if (gType) setGuardType(gType);
       if (provName) setProvinceName(provName);
       if (lgu) setLguName(lgu);
     } catch (e) {
@@ -213,24 +216,27 @@ export default function HomeScreen() {
     const fetchSeq = ++attendanceFetchSeqRef.current;
     try {
       const userData = await authService.getUserData();
+      const isGuest = userData?.is_guest === 'true';
       if (!userData.access_token || !userData.employee_id) {
-        console.log('No user data available');
-        return;
+        if (!isGuest) {
+          console.log('No user data available');
+          return;
+        }
       }
 
       const today = formatDate(new Date());
-      console.log('DEBUG: Fetching attendance for employee_id=', userData.employee_id, 'date=', today);
+      console.log('DEBUG: Fetching attendance for employee_id=', userData.employee_id, 'date=', today, 'isGuest=', isGuest);
       
       if (fetchSeq !== attendanceFetchSeqRef.current) return;
 
-      // Check for approved change requests for today
-      const changeRequestResult = await attendanceService.getChangeRequests(Number(userData.employee_id), today);
       let approvedTimeInRequest: any = null;
       let approvedTimeOutRequest: any = null;
-      
-      console.log('DEBUG: Change request result:', JSON.stringify(changeRequestResult));
-      
-      if (changeRequestResult?.success) {
+
+      // Check for approved change requests for today
+      if (!isGuest) {
+        const changeRequestResult = await attendanceService.getChangeRequests(Number(userData.employee_id), today);
+        console.log('DEBUG: Change request result:', JSON.stringify(changeRequestResult));
+        if (changeRequestResult?.success) {
         let apiRequests: any[] = [];
         if (Array.isArray(changeRequestResult.data)) {
           apiRequests = changeRequestResult.data;
@@ -271,13 +277,13 @@ export default function HomeScreen() {
             if (reqDate === today && reqStatus === 'approved') {
               if (reqAction === 'time_in' && !approvedTimeInRequest) {
                 approvedTimeInRequest = req;
-                console.log('✓ DEBUG: Found approved TIME_IN request:', req.requested_time);
+                console.log('Γ£ô DEBUG: Found approved TIME_IN request:', req.requested_time);
               } else if (reqAction === 'time_out' && !approvedTimeOutRequest) {
                 approvedTimeOutRequest = req;
-                console.log('✓ DEBUG: Found approved TIME_OUT request:', req.requested_time);
+                console.log('Γ£ô DEBUG: Found approved TIME_OUT request:', req.requested_time);
               }
             } else {
-              console.log('✗ DEBUG: Request not matched - Date match:', reqDate === today, 'Status match:', reqStatus === 'approved');
+              console.log('Γ£ù DEBUG: Request not matched - Date match:', reqDate === today, 'Status match:', reqStatus === 'approved');
             }
           }
         }
@@ -294,7 +300,6 @@ export default function HomeScreen() {
 
             const attendanceInfo = await attendanceService.getAttendanceForDate(today, true);
             const branchId = attendanceInfo?.branchId || 0;
-            const guardType = attendanceInfo?.guardType || 'Regular';
             const guardAttendanceId = reqAction === 'time_in' ? attendanceInfo?.timeInId : attendanceInfo?.timeOutId;
             const requestedTime = String(approvedReq.requested_time || approvedReq.time || '').trim();
 
@@ -308,7 +313,6 @@ export default function HomeScreen() {
               action: reqAction,
               requestedTime,
               guardAttendanceId: guardAttendanceId ? Number(guardAttendanceId) : undefined,
-              guardType,
             });
             console.log('Home auto-apply result =>', applyRes);
             if (applyRes?.success) appliedApprovedIdsRef.current.add(requestId);
@@ -318,12 +322,13 @@ export default function HomeScreen() {
         };
         if (approvedTimeInRequest) await applyIfNeeded(approvedTimeInRequest);
         if (approvedTimeOutRequest) await applyIfNeeded(approvedTimeOutRequest);
+        }
       }
 
       // Use the attendance logs API - fetch only today's data
       const result = await authService.getTimeEntryHistory(
         parseInt(userData.employee_id),
-        userData.access_token
+        userData.access_token || ''
       );
 
       console.log('DEBUG: Attendance logs API result:', JSON.stringify(result));
@@ -350,13 +355,11 @@ export default function HomeScreen() {
           const sName = log.site_name ?? log.site?.name ?? null;
           const sIn   = log.shift_in ?? null;
           const sOut  = log.shift_out ?? null;
-          const gType = log.guard_type ?? null;
           if (pName) { setProvinceName(pName); }
           if (lName) { setLguName(lName); }
           if (sName) { setSiteName(sName); }
           if (sIn)   { setShiftIn(sIn); }
           if (sOut)  { setShiftOut(sOut); }
-          if (gType) { setGuardType(gType); }
           // Persist to AsyncStorage so the card shows even before an API response
           try {
             const AS = require('@react-native-async-storage/async-storage').default;
@@ -365,7 +368,6 @@ export default function HomeScreen() {
             if (sName) await AS.setItem('current_site_name', sName);
             if (sIn)   await AS.setItem('current_site_shift_in', sIn);
             if (sOut)  await AS.setItem('current_site_shift_out', sOut);
-            if (gType) await AS.setItem('guard_type', gType);
           } catch (_) { /* ignore */ }
           if (pName || lName || sName) break; // got what we need
         }
@@ -414,24 +416,24 @@ export default function HomeScreen() {
         if (approvedTimeInRequest && approvedTimeInRequest.requested_time) {
           formattedTimeIn = formatDisplayTime(approvedTimeInRequest.requested_time);
           setApprovedTimeInChange(approvedTimeInRequest.requested_time);
-          console.log('✓ DEBUG: Overriding TimeIn with approved request:', formattedTimeIn);
+          console.log('Γ£ô DEBUG: Overriding TimeIn with approved request:', formattedTimeIn);
         } else {
           setApprovedTimeInChange(null);
-          console.log('✗ DEBUG: No approved TimeIn request to override');
+          console.log('Γ£ù DEBUG: No approved TimeIn request to override');
         }
         
         if (approvedTimeOutRequest && approvedTimeOutRequest.requested_time) {
           formattedTimeOut = formatDisplayTime(approvedTimeOutRequest.requested_time);
           setApprovedTimeOutChange(approvedTimeOutRequest.requested_time);
-          console.log('✓ DEBUG: Overriding TimeOut with approved request:', formattedTimeOut);
+          console.log('Γ£ô DEBUG: Overriding TimeOut with approved request:', formattedTimeOut);
         } else {
           setApprovedTimeOutChange(null);
-          console.log('✗ DEBUG: No approved TimeOut request to override');
+          console.log('Γ£ù DEBUG: No approved TimeOut request to override');
         }
         
         if (fetchSeq !== attendanceFetchSeqRef.current) return;
         
-        // Always compare cache vs API — cache wins if it is more recent (API may lag behind)
+        // Always compare cache vs API; cache wins if it is more recent (API may lag behind)
         try {
           const AS = require('@react-native-async-storage/async-storage').default;
           const cachedInDate = await AS.getItem('last_time_in_date');
@@ -460,9 +462,9 @@ export default function HomeScreen() {
           }
         } catch (_) { /* ignore */ }
 
-        // Always update both time displays (use '— : — : —' if truly nothing found)
-        setClockInTime(latestTimeIn ? formattedTimeIn : '— : — : —');
-        setClockOutTime(latestTimeOut ? formattedTimeOut : '— : — : —');
+        // Always update both time displays (use '-- : -- : --' if truly nothing found)
+        setClockInTime(latestTimeIn ? formattedTimeIn : '-- : -- : --');
+        setClockOutTime(latestTimeOut ? formattedTimeOut : '-- : -- : --');
 
         console.log('DEBUG: Updated times - Time In:', latestTimeIn, 'Time Out:', latestTimeOut);
         console.log('DEBUG: Final displayed times - Time In:', formattedTimeIn, 'Time Out:', formattedTimeOut);
@@ -515,8 +517,11 @@ export default function HomeScreen() {
 
   const loadChangeRequests = async () => {
     try {
-    
       const user = await authService.getUserData();
+      if (user?.is_guest === 'true') {
+        setRequests([]);
+        return;
+      }
       const employeeId = Number(user?.employee_id || 0);
       if (!employeeId) return;
 
@@ -698,16 +703,10 @@ export default function HomeScreen() {
                       {siteCode && siteName ? `${siteCode} - ${siteName}` : siteCode || siteName}
                     </Text>
                   </View>
-                ) : null}54r8
-                {guardType ? (
-                  <View style={styles.guardTypeRow}>
-                    <Ionicons name="shield-checkmark-outline" size={14} color={theme.primary} />
-                    <Text style={styles.guardTypeText}>{guardType}</Text>
-                  </View>
                 ) : null}
                 {(shiftIn || shiftOut) ? (
                   <Text style={styles.shiftTimeText}>
-                    Shift Time ({shiftIn || '—'} - {shiftOut || '—'})
+                    Shift Time ({shiftIn || '--'} - {shiftOut || '--'})
                   </Text>
                 ) : null}
                 <View style={styles.siteInfoDivider} />
@@ -716,7 +715,7 @@ export default function HomeScreen() {
             <View style={styles.clockInOutContainer}>
             <View style={styles.clockInOutItem}>
               <Text style={styles.clockInOutLabel}>Time In</Text>
-              <Text style={clockInTime === '— : — : —' ? styles.clockInOutValueGrey : styles.clockInOutValueGreen}>
+              <Text style={clockInTime === '-- : -- : --' ? styles.clockInOutValueGrey : styles.clockInOutValueGreen}>
                 {clockInTime} 
               </Text>
             </View>
@@ -725,7 +724,7 @@ export default function HomeScreen() {
             
             <View style={styles.clockInOutItem}>
               <Text style={styles.clockInOutLabel}>Time Out</Text>
-              <Text style={clockOutTime === '— : — : —' ? styles.clockInOutValueGrey : styles.clockInOutValueGreen}>
+              <Text style={clockOutTime === '-- : -- : --' ? styles.clockInOutValueGrey : styles.clockInOutValueGreen}>
                 {clockOutTime}
               </Text>
             </View>
@@ -802,9 +801,9 @@ export default function HomeScreen() {
             <View>
               <View style={styles.modalSummaryCard}>
                 <Text style={styles.modalSummaryLabel}>Requested Date</Text>
-                <Text style={styles.modalSummaryValue}>{trackingItem.date || '—'}</Text>
+                <Text style={styles.modalSummaryValue}>{trackingItem.date || '--'}</Text>
                 <Text style={[styles.modalSummaryLabel, { marginTop: 8 }]}>Requested Time</Text>
-                <Text style={styles.modalSummaryValue}>{trackingItem.requestedTime || '—'}</Text>
+                <Text style={styles.modalSummaryValue}>{trackingItem.requestedTime || '--'}</Text>
               </View>
 
               <View>
@@ -996,18 +995,6 @@ const createStyles = (theme: ThemeShape) =>
       fontFamily: 'Poppins',
       fontWeight: '700',
       flexShrink: 1,
-    },
-    guardTypeRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 4,
-      marginBottom: 4,
-    },
-    guardTypeText: {
-      fontSize: 13,
-      color: theme.primary,
-      fontFamily: 'Poppins',
-      fontWeight: '600',
     },
     shiftTimeText: {
       fontSize: 12,

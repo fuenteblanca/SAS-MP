@@ -66,7 +66,7 @@ export default {
 
 	/**
 	 * Get attendance details for a specific date for the current user.
-	 * Returns latestTimeIn/latestTimeOut, branchId, guardType and timeInId/timeOutId when available.
+	 * Returns latestTimeIn/latestTimeOut, branchId and timeInId/timeOutId when available.
 	 */
 	getAttendanceForDate: async (date: string, includeIds = false) => {
 		try {
@@ -85,7 +85,6 @@ export default {
 			let timeInId: number | undefined;
 			let timeOutId: number | undefined;
 			let branchId: number | undefined;
-			let guardType: string | undefined;
 
 			// Normalize and pick the latest IN and OUT for the exact requested date
 			res.data.forEach((rec: any) => {
@@ -118,7 +117,6 @@ export default {
 					if (!branchId && (rec.branch_id || rec.branchId || rec.branch?.id)) {
 						branchId = Number(rec.branch_id || rec.branchId || rec.branch?.id);
 					}
-					if (!guardType && rec.guard_type) guardType = rec.guard_type;
 
 					if (action.includes('in')) {
 						if (!isNaN(ts) && ts > latestInTs) {
@@ -142,7 +140,6 @@ export default {
 				latestTimeIn: latestIn,
 				latestTimeOut: latestOut,
 				branchId,
-				guardType,
 				timeInId,
 				timeOutId,
 			};
@@ -264,7 +261,7 @@ export default {
 	/**
 	 * Apply an approved change request to guard attendance.
 	 * Tries common endpoints with authorization.
-	 * Args: { requestId, employeeId, branchId, date, action: 'time_in'|'time_out', requestedTime, guardAttendanceId?, guardType? }
+	 * Args: { requestId, employeeId, branchId, date, action: 'time_in'|'time_out', requestedTime, guardAttendanceId? }
 	 */
 	applyApprovedChangeRequest: async (args: {
 		requestId: string;
@@ -274,7 +271,6 @@ export default {
 		action: 'time_in' | 'time_out';
 		requestedTime: string;
 		guardAttendanceId?: number;
-		guardType?: string;
 	}) => {
 		try {
 			const user = await authService.getUserData();
@@ -303,7 +299,6 @@ export default {
 			// only include updated_by if we have a sensible user id (>0)
 			if (userId && userId > 0) directBody.updated_by = userId;
 			if (guardName) directBody.guard_name = guardName;
-			if (args.guardType) directBody.guard_type = args.guardType;
 
 			// helper to call an endpoint and return verbose result
 			const call = async (url: string, method: string, body: any) => {
@@ -375,7 +370,6 @@ export default {
 				date: args.date,
 				action: args.action,
 				requested_time: args.requestedTime,
-				guard_type: args.guardType,
 				company_id: companyId || undefined,
 				updated_by: userId || undefined,
 			};
@@ -427,7 +421,6 @@ export default {
 		date: string;
 		action: 'time_in' | 'time_out';
 		requestedTime: string;
-		guardType?: string;
 	}) => {
 		try {
 			const user = await authService.getUserData();
@@ -477,7 +470,6 @@ export default {
 				is_processed: 1,
 			};
 			if (guardName) updatedRecord.guard_name = guardName;
-			if (args.guardType) updatedRecord.guard_type = args.guardType;
 
 			// ensure numeric fields are numbers
 			const numericFields = ['employee_id','branch_id','company_id','is_processed','updated_by'];

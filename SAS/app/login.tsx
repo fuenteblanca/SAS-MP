@@ -116,6 +116,28 @@ export default function LoginScreen() {
     }
   };
 
+  const handleGuestLogin = async () => {
+    setIsLoading(true);
+    try {
+      const response = await authService.loginAsGuest();
+      if (response.success) {
+        Alert.alert('Demo Mode', 'You are now using Guest Mode with demo attendance data.', [
+          {
+            text: 'OK',
+            onPress: () => router.replace('/(tabs)'),
+          },
+        ]);
+      } else {
+        Alert.alert('Guest Login Failed', response.message || 'Unable to start guest mode.');
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Unable to start Guest Mode. Please try again.');
+      console.error('Guest login error:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleForgotPassword = () => {
     Alert.alert('Forgot Password', 'Password reset feature coming soon!');
   };
@@ -217,6 +239,14 @@ export default function LoginScreen() {
               ) : (
                 <Text style={styles.loginButtonText}>Sign In</Text>
               )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.guestButton, isLoading && styles.loginButtonDisabled]}
+              onPress={handleGuestLogin}
+              disabled={isLoading}
+            >
+              <Text style={styles.guestButtonText}>Login as Guest</Text>
             </TouchableOpacity>
 
             {/* App Version */}
@@ -377,6 +407,20 @@ const createStyles = (theme: ThemeShape) =>
       fontSize: 16,
       fontWeight: 'bold',
       color: theme.onPrimary,
+    },
+    guestButton: {
+      marginTop: 12,
+      borderRadius: 12,
+      padding: 16,
+      alignItems: 'center',
+      borderWidth: 1.5,
+      borderColor: theme.primary,
+      backgroundColor: theme.card,
+    },
+    guestButtonText: {
+      fontSize: 15,
+      fontWeight: '700',
+      color: theme.primary,
     },
     versionContainer: {
       alignItems: 'center',

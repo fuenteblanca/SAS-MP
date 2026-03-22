@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import guestDemoService from './guestDemoService';
 
 const BASE_URL = 'https://api.rds.ismis.com.ph';
 
@@ -54,6 +55,7 @@ class AuthService {
         await AsyncStorage.setItem('user_id', String(data.user.id));
         await AsyncStorage.setItem('userName', data.user.name);
         await AsyncStorage.setItem('access_token', data.access_token);
+        await AsyncStorage.removeItem('is_guest');
 
         // Extract and save company_id from user data
         if (data.user.company_id != null) {
@@ -101,6 +103,34 @@ class AuthService {
     }
   }
 
+  async loginAsGuest(): Promise<LoginResponse> {
+    try {
+      await this.logout();
+      await guestDemoService.enterGuestMode();
+      await AsyncStorage.setItem('is_guest', 'true');
+      await AsyncStorage.multiSet([
+        ['employee_id', '900001'],
+        ['user_id', '900001'],
+        ['userName', 'Guest User'],
+        ['user_company_id', '0'],
+        ['user_area_id', '0'],
+      ]);
+
+      return {
+        success: true,
+        message: 'Guest login successful',
+        employee_id: 900001,
+        company_id: 0,
+        name: 'Guest User',
+      };
+    } catch (e) {
+      return {
+        success: false,
+        message: `Guest login failed: ${e}`,
+      };
+    }
+  }
+
   /**
    * Logout method - clears all stored data
    */
@@ -112,8 +142,11 @@ class AuthService {
         'userName',
         'user_company_id',
         'user_branch_id',
+        'user_area_id',
         'access_token',
+        'is_guest',
       ]);
+      await guestDemoService.clearGuestData();
       console.log('Logout successful - all data cleared');
     } catch (e) {
       console.error('Logout error:', e);
@@ -125,6 +158,8 @@ class AuthService {
    */
   async isLoggedIn(): Promise<boolean> {
     try {
+      const isGuest = await AsyncStorage.getItem('is_guest');
+      if (isGuest === 'true') return true;
       const token = await AsyncStorage.getItem('access_token');
       return token !== null;
     } catch (e) {
@@ -144,9 +179,10 @@ class AuthService {
     user_branch_id: string | null;
     user_area_id: string | null;
     access_token: string | null;
+    is_guest: string | null;
   }> {
     try {
-      const [employee_id, user_id, userName, user_company_id, user_branch_id, user_area_id, access_token] = await AsyncStorage.multiGet([
+      const [employee_id, user_id, userName, user_company_id, user_branch_id, user_area_id, access_token, is_guest] = await AsyncStorage.multiGet([
         'employee_id',
         'user_id',
         'userName',
@@ -154,6 +190,7 @@ class AuthService {
         'user_branch_id',
         'user_area_id',
         'access_token',
+        'is_guest',
       ]);
 
       return {
@@ -164,6 +201,7 @@ class AuthService {
         user_branch_id: user_branch_id[1],
         user_area_id: user_area_id[1],
         access_token: access_token[1],
+        is_guest: is_guest[1],
       };
     } catch (e) {
       console.error('Error getting user data:', e);
@@ -175,6 +213,7 @@ class AuthService {
         user_branch_id: null,
         user_area_id: null,
         access_token: null,
+        is_guest: null,
       };
     }
   }
@@ -192,6 +231,15 @@ class AuthService {
     data?: any[];
     message?: string;
   }> {
+    const activeUser = await this.getUserData();
+    if (activeUser.is_guest === 'true') {
+      const guestRows = await guestDemoService.getAttendanceLogs(startDate, endDate);
+      return {
+        success: true,
+        data: guestRows,
+      };
+    }
+
     const headers = {
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',

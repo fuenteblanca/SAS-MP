@@ -78,14 +78,15 @@ export default function TimeEntryHistoryScreen() {
     const fetchMonth = async () => {
       try {
         const user = await authService.getUserData();
-        if (!user?.employee_id || !user?.access_token) return;
+        const isGuest = user?.is_guest === 'true';
+        if (!user?.employee_id || (!isGuest && !user?.access_token)) return;
         const d = new Date(selectedDate);
         const first = new Date(d.getFullYear(), d.getMonth(), 1);
         const last = new Date(d.getFullYear(), d.getMonth() + 1, 0);
         const fmt = (x: Date) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
         const start = fmt(first);
         const end = fmt(last);
-        const res = await authService.getTimeEntryHistory(Number(user.employee_id), user.access_token, start, end);
+        const res = await authService.getTimeEntryHistory(Number(user.employee_id), user.access_token || '', start, end);
         const next: any = {};
         if (res?.success && Array.isArray(res.data)) {
           const byDate: Record<string, { in?: string; out?: string }> = {};
@@ -134,12 +135,11 @@ export default function TimeEntryHistoryScreen() {
     // Fetch latest in/out for selected date for detail section
     const fetchDay = async () => {
       try {
-        const info = await (authService as any).getTimeEntryHistoryForDate?.(selectedDate);
-        // Fallback: reuse history and filter
         const user = await authService.getUserData();
-        if (!user?.employee_id || !user?.access_token) return;
+        const isGuest = user?.is_guest === 'true';
+        if (!user?.employee_id || (!isGuest && !user?.access_token)) return;
         const dateStr: string = selectedDate || today;
-        const token: string = String(user.access_token);
+        const token: string = String(user.access_token || '');
         const res = await authService.getTimeEntryHistory(Number(user.employee_id), token, dateStr, dateStr);
         let latestIn: string | null = null;
         let latestOut: string | null = null;

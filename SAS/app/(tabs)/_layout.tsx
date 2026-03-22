@@ -12,6 +12,8 @@ import shiftReminderService from '@/services/shiftReminderService';
 import siteService, { Site } from '@/services/siteService';
 import storageService from '@/services/storageService';
 import attendanceService from '@/services/attendanceService';
+import guestDemoService from '@/services/guestDemoService';
+import eventBus from '@/services/eventBus';
 import * as Notifications from 'expo-notifications';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
@@ -297,6 +299,20 @@ export default function TabLayout() {
     setIsTimeInLoading(true);
 
     try {
+      const userData = await authService.getUserData();
+      if (userData?.is_guest === 'true') {
+        const log = await guestDemoService.recordAttendance('time_in');
+        const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+        await AsyncStorage.multiSet([
+          ['last_time_in', String(log.time || '')],
+          ['last_time_in_date', String(log.date || '')],
+        ]);
+        eventBus.emit('attendanceUpdated', { action: 'time_in', mode: 'guest' });
+        Alert.alert('Demo Mode', 'Guest Time In recorded successfully!');
+        router.replace('/(tabs)');
+        return;
+      }
+
       // Always refresh site from geofence to avoid stale startup context
       let site = await autoResolveSiteFromGeofence();
       if (!site && currentSite) {
@@ -408,8 +424,14 @@ export default function TabLayout() {
       // Cache the time-in for immediate UI update
       try {
         const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-        await AsyncStorage.setItem('last_time_in', currentTime);
-        await AsyncStorage.setItem('last_time_in_date', currentDate);
+        await AsyncStorage.multiSet([
+          ['last_time_in', currentTime],
+          ['last_time_in_date', currentDate],
+          ['current_site_name', String(submitSite.name || '')],
+          ['current_site_code', String(submitSite.code || '')],
+          ['current_site_shift_in', String(submitSite.shiftIn || '')],
+          ['current_site_shift_out', String(submitSite.shiftOut || '')],
+        ]);
       } catch (e) {
         console.warn('[TimeIn] Failed to cache time:', e);
       }
@@ -422,6 +444,7 @@ export default function TabLayout() {
       }
 
       // Refresh home screen
+      eventBus.emit('attendanceUpdated', { action: 'time_in', mode: 'production' });
       router.replace('/(tabs)');
     } catch (error: any) {
       throw error;
@@ -437,6 +460,20 @@ export default function TabLayout() {
     setIsTimeOutLoading(true);
 
     try {
+      const userData = await authService.getUserData();
+      if (userData?.is_guest === 'true') {
+        const log = await guestDemoService.recordAttendance('time_out');
+        const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+        await AsyncStorage.multiSet([
+          ['last_time_out', String(log.time || '')],
+          ['last_time_out_date', String(log.date || '')],
+        ]);
+        eventBus.emit('attendanceUpdated', { action: 'time_out', mode: 'guest' });
+        Alert.alert('Demo Mode', 'Guest Time Out recorded successfully!');
+        router.replace('/(tabs)');
+        return;
+      }
+
       // Always refresh site from geofence to avoid stale startup context
       let site = await autoResolveSiteFromGeofence();
       if (!site && currentSite) {
@@ -548,8 +585,14 @@ export default function TabLayout() {
       // Cache the time-out for immediate UI update
       try {
         const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-        await AsyncStorage.setItem('last_time_out', currentTime);
-        await AsyncStorage.setItem('last_time_out_date', currentDate);
+        await AsyncStorage.multiSet([
+          ['last_time_out', currentTime],
+          ['last_time_out_date', currentDate],
+          ['current_site_name', String(submitSite.name || '')],
+          ['current_site_code', String(submitSite.code || '')],
+          ['current_site_shift_in', String(submitSite.shiftIn || '')],
+          ['current_site_shift_out', String(submitSite.shiftOut || '')],
+        ]);
       } catch (e) {
         console.warn('[TimeOut] Failed to cache time:', e);
       }
@@ -562,6 +605,7 @@ export default function TabLayout() {
       }
 
       // Refresh home screen
+      eventBus.emit('attendanceUpdated', { action: 'time_out', mode: 'production' });
       router.replace('/(tabs)');
     } catch (error: any) {
       throw error;

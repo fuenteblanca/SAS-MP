@@ -1,4 +1,4 @@
-import { useThemeColors } from '@/hooks/use-theme';
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              import { useThemeColors } from '@/hooks/use-theme';
 import { Ionicons } from '@expo/vector-icons';
 import { useMemo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';

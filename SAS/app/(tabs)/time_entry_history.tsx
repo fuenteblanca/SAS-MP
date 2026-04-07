@@ -2,11 +2,11 @@ import authService from '@/services/authService';
 import branchService from '@/services/branchService';
 import siteService from '@/services/siteService';
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
 import React, { useEffect, useState } from 'react';
-import { ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Calendar } from 'react-native-calendars';
 
 function formatDateISO(d: Date) {
@@ -34,16 +34,26 @@ function normalizeAction(value: any): string {
   return String(value || '').trim().toLowerCase().replace(/\s+/g, '_').replace(/-/g, '_');
 }
 
+function getCutoffRange(dateStr: string): { start: string; end: string } {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const yearMonth = `${year}-${String(month).padStart(2, '0')}`;
+  if (day <= 15) {
+    return { start: `${yearMonth}-01`, end: `${yearMonth}-15` };
+  } else {
+    const lastDay = new Date(year, month, 0).getDate();
+    return { start: `${yearMonth}-16`, end: `${yearMonth}-${String(lastDay).padStart(2, '0')}` };
+  }
+}
+
 export default function TimeEntryHistoryScreen() {
   const router = useRouter();
   const today = formatDateISO(new Date());
   const [selectedDate, setSelectedDate] = useState<string>(today);
   const [markedDates, setMarkedDates] = useState<any>({ [today]: { selected: true, selectedColor: '#F6B91E' } });
-  const [latestIn, setLatestIn] = useState<string | null>(null);
-  const [latestOut, setLatestOut] = useState<string | null>(null);
+  const [dayLogs, setDayLogs] = useState<Array<{ action: string; time: string; site: string }>>([]);
+  const [dayLoading, setDayLoading] = useState(false);
   const [shiftInTime, setShiftInTime] = useState<string | null>(null);
   const [shiftOutTime, setShiftOutTime] = useState<string | null>(null);
-  const [selectedDateSite, setSelectedDateSite] = useState<string>('N/A');
   const [refreshTick, setRefreshTick] = useState(0);
 
   useFocusEffect(
@@ -74,18 +84,13 @@ export default function TimeEntryHistoryScreen() {
 
 
   useEffect(() => {
-    // Fetch month logs and mark dates
+    // Fetch cutoff logs and mark dates
     const fetchMonth = async () => {
       try {
         const user = await authService.getUserData();
         const isGuest = user?.is_guest === 'true';
         if (!user?.employee_id || (!isGuest && !user?.access_token)) return;
-        const d = new Date(selectedDate);
-        const first = new Date(d.getFullYear(), d.getMonth(), 1);
-        const last = new Date(d.getFullYear(), d.getMonth() + 1, 0);
-        const fmt = (x: Date) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
-        const start = fmt(first);
-        const end = fmt(last);
+        const { start, end } = getCutoffRange(selectedDate);
         const res = await authService.getTimeEntryHistory(Number(user.employee_id), user.access_token || '', start, end);
         const next: any = {};
         if (res?.success && Array.isArray(res.data)) {
@@ -132,81 +137,73 @@ export default function TimeEntryHistoryScreen() {
   }, [selectedDate, shiftInTime, refreshTick]);
 
   useEffect(() => {
-    // Fetch latest in/out for selected date for detail section
+    // Fetch all time-in/out entries for selected date
     const fetchDay = async () => {
+      setDayLoading(true);
       try {
         const user = await authService.getUserData();
         const isGuest = user?.is_guest === 'true';
-        if (!user?.employee_id || (!isGuest && !user?.access_token)) return;
+        if (!user?.employee_id || (!isGuest && !user?.access_token)) { setDayLoading(false); return; }
         const dateStr: string = selectedDate || today;
         const token: string = String(user.access_token || '');
         const res = await authService.getTimeEntryHistory(Number(user.employee_id), token, dateStr, dateStr);
-        let latestIn: string | null = null;
-        let latestOut: string | null = null;
-        let site: string = 'N/A';
+
+        const collected: Array<{ action: string; time: string; site: string }> = [];
+        let resolvedSite = 'N/A';
         let siteIdToFetch: number | null = null;
-        
-        console.log('DEBUG TIME ENTRY HISTORY: Full response:', JSON.stringify(res, null, 2));
-        
+
         if (res?.success && Array.isArray(res.data)) {
-          console.log('DEBUG TIME ENTRY HISTORY: Data array length:', res.data.length);
           for (const log of res.data) {
-            console.log('DEBUG TIME ENTRY HISTORY: Processing log entry:', JSON.stringify(log, null, 2));
             const date = (log.date || log.attendance_date || '').toString();
             const dateOnly = date.includes('T') ? date.split('T')[0] : (date.includes(' ') ? date.split(' ')[0] : date);
-            console.log('DEBUG TIME ENTRY HISTORY: Comparing dateOnly:', dateOnly, 'with dateStr:', dateStr);
             if (dateOnly !== dateStr) continue;
+
             const action = normalizeAction(log.action);
+            const isIn  = action === 'time_in'  || action === 'in'  || action === 'clock_in';
+            const isOut = action === 'time_out' || action === 'out' || action === 'clock_out';
+            if (!isIn && !isOut) continue;
+
             const time = log.time || log.time_out || log.out_time || '';
-            
-            // Extract site - support site and legacy branch fields
-            console.log('DEBUG TIME ENTRY HISTORY: Checking site/branch names:', log.site_name, log.branch_name, 'site_id:', log.site_id, 'branch_id:', log.branch_id);
-            if (log.site_name) {
-              site = String(log.site_name);
-            } else if (log.branch_name) {
-              site = String(log.branch_name);
-            } else if (log.site?.site_name) {
-              site = String(log.site.site_name);
-            } else if (log.branch?.branch_name) {
-              site = String(log.branch.branch_name);
-            } else if (log.site_id || log.branch_id) {
-              siteIdToFetch = Number(log.site_id || log.branch_id);
-              console.log('DEBUG TIME ENTRY HISTORY: Will fetch site name for ID:', siteIdToFetch);
+
+            // Resolve site name (once)
+            if (resolvedSite === 'N/A') {
+              if (log.site_name)        resolvedSite = String(log.site_name);
+              else if (log.branch_name) resolvedSite = String(log.branch_name);
+              else if (log.site?.site_name)     resolvedSite = String(log.site.site_name);
+              else if (log.branch?.branch_name) resolvedSite = String(log.branch.branch_name);
+              else if (log.site_id || log.branch_id) siteIdToFetch = Number(log.site_id || log.branch_id);
             }
-            
-            
-            if (action === 'time_in' || action === 'in' || action === 'clock_in') latestIn = String(time);
-            else if (action === 'time_out' || action === 'out' || action === 'clock_out') latestOut = String(time);
+
+            collected.push({
+              action: isIn ? 'Time In' : 'Time Out',
+              time: String(time),
+              site: resolvedSite,
+            });
           }
         }
-        
-        // If we have a site_id but no site_name, fetch it from the API
-        if (siteIdToFetch && site === 'N/A') {
+
+        // Fetch site name by ID if needed
+        if (siteIdToFetch && resolvedSite === 'N/A') {
           try {
-            console.log('DEBUG TIME ENTRY HISTORY: Fetching site details for ID:', siteIdToFetch);
             const siteDetails = await siteService.getById(siteIdToFetch);
-            if (siteDetails?.name) {
-              site = siteDetails.name;
-              console.log('DEBUG TIME ENTRY HISTORY: Fetched site name:', site);
-            } else {
+            if (siteDetails?.name) resolvedSite = siteDetails.name;
+            else {
               const branchDetails = await branchService.getBranchById(siteIdToFetch);
-              if (branchDetails?.branch_name) {
-                site = branchDetails.branch_name;
-                console.log('DEBUG TIME ENTRY HISTORY: Fetched legacy branch name as site:', site);
-              }
+              if (branchDetails?.branch_name) resolvedSite = branchDetails.branch_name;
             }
-          } catch (err) {
-            console.log('DEBUG TIME ENTRY HISTORY: Error fetching site details:', err);
+          } catch { /* ignore */ }
+          // Backfill resolved site name into collected entries
+          for (const entry of collected) {
+            if (entry.site === 'N/A') entry.site = resolvedSite;
           }
         }
-        
-        console.log('DEBUG TIME ENTRY HISTORY: Final values - site:', site);
-        setLatestIn(latestIn);
-        setLatestOut(latestOut);
-        setSelectedDateSite(site);
+
+        setDayLogs(collected);
       } catch (e) {
         console.log('History day fetch error', e);
-        setSelectedDateSite('Error Loading');
+        setDayLogs([]);
+      } finally {
+        setDayLoading(false);
       }
     };
     fetchDay();
@@ -244,36 +241,52 @@ export default function TimeEntryHistoryScreen() {
               arrowColor: '#F59E0B',
             }}
           />
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Selected Day: {selectedDate}</Text>
-          
-          <View style={styles.infoRow}>
-            <View style={styles.infoItem}>
-              <Ionicons name="business" size={20} color="#F6B91E" />
-              <View style={{ marginLeft: 12, flex: 1 }}>
-                <Text style={styles.infoLabel}>Site</Text>
-                <Text style={styles.infoValue}>{selectedDateSite}</Text>
-              </View>
-            </View>
-          </View>
-          
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 12 }}>
-            <View style={styles.detailBlock}>
-              <Text style={styles.detailLabel}>Time In</Text>
-              <Text style={styles.detailValue}>{formatDisplayHMS(latestIn)}</Text>
-            </View>
-            <View style={styles.detailBlock}>
-              <Text style={styles.detailLabel}>Time Out</Text>
-              <Text style={styles.detailValue}>{formatDisplayHMS(latestOut)}</Text>
-            </View>
-          </View>
-          <View style={{ flexDirection: 'row', marginTop: 12 }}>
+          <View style={{ flexDirection: 'row', marginTop: 10 }}>
             <View style={styles.legendItem}><View style={[styles.legendDot,{backgroundColor:'#10B981'}]} /><Text style={styles.legendText}>Complete</Text></View>
             <View style={styles.legendItem}><View style={[styles.legendDot,{backgroundColor:'#F59E0B'}]} /><Text style={styles.legendText}>Late In</Text></View>
             <View style={styles.legendItem}><View style={[styles.legendDot,{backgroundColor:'#EF4444'}]} /><Text style={styles.legendText}>Missing</Text></View>
           </View>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Attendance History – {selectedDate}</Text>
+
+          {/* Table header */}
+          <View style={styles.tableHeader}>
+            <Text style={[styles.tableHeaderCell, { flex: 1.2 }]}>Action</Text>
+            <Text style={[styles.tableHeaderCell, { flex: 1 }]}>Time</Text>
+            <Text style={[styles.tableHeaderCell, { flex: 1.5 }]}>Site</Text>
+          </View>
+
+          {dayLoading ? (
+            <ActivityIndicator size="small" color="#F6B91E" style={{ marginTop: 16 }} />
+          ) : dayLogs.length === 0 ? (
+            <Text style={styles.emptyText}>No attendance records for this date.</Text>
+          ) : (
+            dayLogs.map((entry, idx) => {
+              const isIn = entry.action === 'Time In';
+              return (
+                <View key={idx} style={[styles.tableRow, idx % 2 === 1 && styles.tableRowAlt]}>
+                  <View style={[styles.tableCell, { flex: 1.2, flexDirection: 'row', alignItems: 'center', gap: 6 }]}>
+                    <Ionicons
+                      name={isIn ? 'log-in' : 'log-out'}
+                      size={18}
+                      color={isIn ? '#10B981' : '#EF4444'}
+                    />
+                    <Text style={[styles.tableCellText, { color: isIn ? '#10B981' : '#EF4444', fontWeight: '700' }]}>
+                      {entry.action}
+                    </Text>
+                  </View>
+                  <Text style={[styles.tableCell, styles.tableCellText, { flex: 1 }]}>
+                    {formatDisplayHMS(entry.time)}
+                  </Text>
+                  <Text style={[styles.tableCell, styles.tableCellText, { flex: 1.5 }]} numberOfLines={2}>
+                    {entry.site}
+                  </Text>
+                </View>
+              );
+            })
+          )}
         </View>
       </ScrollView>
     </View>
@@ -304,4 +317,11 @@ const styles = StyleSheet.create({
   legendItem: { flexDirection: 'row', alignItems: 'center', marginRight: 12 },
   legendDot: { width: 10, height: 10, borderRadius: 5, marginRight: 6 },
   legendText: { fontSize: 12, color: '#6B7280', fontWeight: '600' },
+  tableHeader: { flexDirection: 'row', backgroundColor: '#F6B91E', borderRadius: 8, paddingVertical: 8, paddingHorizontal: 10, marginBottom: 4 },
+  tableHeaderCell: { fontSize: 13, fontWeight: '700', color: '#FFFFFF' },
+  tableRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, paddingHorizontal: 10, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
+  tableRowAlt: { backgroundColor: '#FAFAFA' },
+  tableCell: { paddingRight: 6 },
+  tableCellText: { fontSize: 13, color: '#0B2545', fontWeight: '500' },
+  emptyText: { textAlign: 'center', color: '#9CA3AF', fontSize: 13, paddingVertical: 20 },
 });

@@ -2,7 +2,7 @@
   "expo": {
     "name": "SAS",
     "slug": "sas",
-    "version": "2.1.2",
+    "version": "2.1.1",
     "orientation": "default",
     "icon": "./assets/images/SAS.png",
     "scheme": "sas",
@@ -36,7 +36,7 @@
         "android.permission.READ_MEDIA_VISUAL_USER_SELECTED"
       ],
       "package": "sas.mp.jamila",
-      "versionCode": 2
+      "versionCode": 1
     },
     "androidNavigationBar": {
       "backgroundColor": "#F3F4F6",

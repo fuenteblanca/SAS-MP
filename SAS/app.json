@@ -2,7 +2,7 @@
   "expo": {
     "name": "SAS",
     "slug": "sas",
-    "version": "2.1.1",
+    "version": "2.1.2",
     "orientation": "default",
     "icon": "./assets/images/SAS.png",
     "scheme": "sas",
@@ -92,7 +92,7 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "a28f5290-117d-4b01-a3b0-3e2ac6f21a01"
+        "projectId": "6f574893-bdf4-419c-8867-ad21ef4cce0e"
       }
     },
     "owner": "jimhue"

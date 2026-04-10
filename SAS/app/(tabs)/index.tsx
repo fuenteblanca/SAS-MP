@@ -8,7 +8,7 @@ import { formatDate } from '@/services/timeService';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import React, { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, FlatList, Image, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, FlatList, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 type ThemeShape = ReturnType<typeof useThemeColors>;
 
@@ -87,12 +87,12 @@ export default function HomeScreen() {
       loadChangeRequests();
       loadSiteInfo();
 
-      // Set up polling to refresh attendance every 5 seconds while on this screen
+      // Set up polling to refresh attendance every 10 seconds while on this screen (reduced from 5s to minimize server load)
       const pollInterval = setInterval(() => {
         loadSiteInfo();
         fetchTodayAttendance();
         loadChangeRequests();
-      }, 5000);
+      }, 10000);
 
       return () => clearInterval(pollInterval);
     }, [])
@@ -232,7 +232,7 @@ export default function HomeScreen() {
       let approvedTimeInRequest: any = null;
       let approvedTimeOutRequest: any = null;
 
-      // Check for approved change requests for today
+      // Check for approved change requests for today - pass date to filter server-side
       if (!isGuest) {
         const changeRequestResult = await attendanceService.getChangeRequests(Number(userData.employee_id), today);
         console.log('DEBUG: Change request result:', JSON.stringify(changeRequestResult));
@@ -325,10 +325,12 @@ export default function HomeScreen() {
         }
       }
 
-      // Use the attendance logs API - fetch only today's data
+      // Use the attendance logs API - fetch only today's data by passing date range
       const result = await authService.getTimeEntryHistory(
-        parseInt(userData.employee_id),
-        userData.access_token || ''
+        parseInt(userData.employee_id || '0'), 
+        userData.access_token || '',
+        today,  // startDate - only fetch today's records
+        today   // endDate - only fetch today's records
       );
 
       console.log('DEBUG: Attendance logs API result:', JSON.stringify(result));
@@ -525,7 +527,9 @@ export default function HomeScreen() {
       const employeeId = Number(user?.employee_id || 0);
       if (!employeeId) return;
 
-      const result = await attendanceService.getChangeRequests(employeeId);
+      // Fetch only today's change requests for faster loading
+      const today = formatDate(new Date());
+      const result = await attendanceService.getChangeRequests(employeeId, today);
       let apiRequests: any[] = [];
       if (result?.success) {
         if (Array.isArray(result.data)) {
@@ -539,7 +543,7 @@ export default function HomeScreen() {
 
       // Also fetch OT requests using authenticated endpoint and merge (some backends require auth)
       try {
-        const otRes = await attendanceService.fetchOtRequests(employeeId);
+        const otRes = await attendanceService.fetchOtRequests(employeeId, today);
         if (otRes?.success) {
           if (Array.isArray(otRes.data)) {
             apiRequests = apiRequests.concat(otRes.data);

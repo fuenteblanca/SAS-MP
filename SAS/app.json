@@ -2,6 +2,7 @@
   "expo": {
     "name": "SAS",
     "slug": "sas",
+    "versionCode": 2,
     "version": "2.1.1",
     "orientation": "default",
     "icon": "./assets/images/SAS.png",
